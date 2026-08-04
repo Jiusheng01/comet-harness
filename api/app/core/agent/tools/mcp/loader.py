@@ -120,10 +120,8 @@ async def build_mcp_tools(
     )
 
     ok_items: list[tuple[MCPServer, list[BaseTool]]] = []
-    had_failure = False
     for server, result in zip(servers, results, strict=True):
         if isinstance(result, BaseException):
-            had_failure = True
             err = (
                 f"超时(>{_MCP_LOAD_TIMEOUT:.0f}s)"
                 if isinstance(result, TimeoutError)
@@ -145,9 +143,10 @@ async def build_mcp_tools(
         elapsed,
     )
 
-    # 仅全部成功时缓存，避免把「缺失败节点」的残缺列表锁 5 分钟
-    if not had_failure:
-        _MCP_CACHE[uid] = (now + _MCP_CACHE_TTL, fingerprint, list(tools))
+    # 成功子集也缓存：否则像 stock 这种常挂节点会让「had_failure」每轮都为真，
+    # 缓存永远写不进去，每条消息都要重新握手（常见多等 5~8 秒）。
+    # 指纹随 server 配置变化失效；坏节点在 TTL 内不重试，可在工具页关掉或等缓存过期。
+    _MCP_CACHE[uid] = (now + _MCP_CACHE_TTL, fingerprint, list(tools))
     return tools
 
 
