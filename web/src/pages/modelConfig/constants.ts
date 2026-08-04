@@ -7,6 +7,7 @@ export const TYPE_OPTIONS: { label: string; value: ModelType }[] = [
   { label: 'Rerank 模型', value: 'rerank' },
   { label: '联网搜索', value: 'websearch' },
   { label: '语音识别 ASR', value: 'asr' },
+  { label: '审稿模型 Verifier', value: 'verifier' },
 ]
 
 export const TYPE_LABEL: Record<ModelType, string> = {
@@ -16,6 +17,7 @@ export const TYPE_LABEL: Record<ModelType, string> = {
   rerank: 'Rerank',
   websearch: '联网搜索',
   asr: '语音识别',
+  verifier: '审稿 Verifier',
 }
 
 export const PROVIDER_OPTIONS: { label: string; value: Provider }[] = [

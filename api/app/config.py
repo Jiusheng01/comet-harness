@@ -157,8 +157,9 @@ class Settings(BaseSettings):
     loop_enabled: bool = True
     # Verifier 选型:
     #   same  — 同 chat 模型新开 session + critic prompt(基线,无需额外配置)
-    #   cross — 跨 family verifier 模型(需用户在模型配置里加 type=verifier 一条);未配则自动降级到 same
-    loop_verifier_kind: str = "same"
+    #   cross — 优先用用户配置的 type=verifier 模型(跨 family);未配则自动降级到 same
+    # 默认 cross:有 Verifier 配置即生效,无配置时行为与 same 相同(build_verifier 内降级)
+    loop_verifier_kind: str = "cross"
     # 最大迭代轮数(N 轮不通过即 ForceExceed 标 unverified 仍展示)
     loop_max_iterations: int = 2
 

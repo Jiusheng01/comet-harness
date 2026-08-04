@@ -255,6 +255,10 @@ class _TraceCtx:
         self._record = record
 
     @property
+    def is_noop(self) -> bool:
+        return False
+
+    @property
     def trace_id(self) -> uuid.UUID:
         return self._record.trace_id
 
@@ -269,6 +273,7 @@ class _TraceCtx:
 class _NoopTraceCtx:
     """采样掉或 tracing 关闭时返回的空对象。"""
 
+    is_noop = True
     trace_id = uuid.UUID(int=0)
 
     def set_loop_run_id(self, loop_run_id: uuid.UUID | None) -> None:

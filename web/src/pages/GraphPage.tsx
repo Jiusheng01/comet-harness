@@ -405,6 +405,8 @@ export default function GraphPage() {
                 nodeId="id"
                 cooldownTicks={120}
                 d3VelocityDecay={0.3}
+                // 默认滚轮留给页面滚动；Ctrl/⌘ + 滚轮才缩放图谱，避免占满内容区后「滚不动」
+                enableZoomInteraction={(e) => e.ctrlKey || e.metaKey}
                 linkColor={(l) =>
                   highlightLinks.current.has(l as FGLink)
                     ? '#155EEF'

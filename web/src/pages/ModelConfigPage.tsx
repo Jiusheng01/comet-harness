@@ -76,6 +76,12 @@ const TYPE_META: Record<
     gradient: 'linear-gradient(135deg, #EC4899 0%, #F9A8D4 100%)',
     desc: '语音识别，把语音转成文字',
   },
+  verifier: {
+    color: '#7A5AF8',
+    bg: '#F4F1FE',
+    gradient: 'linear-gradient(135deg, #7A5AF8 0%, #A78BFA 100%)',
+    desc: '深度研究质量审稿的独立评判模型',
+  },
 }
 
 const TYPE_ORDER: ModelType[] = [
@@ -85,6 +91,7 @@ const TYPE_ORDER: ModelType[] = [
   'rerank',
   'websearch',
   'asr',
+  'verifier',
 ]
 
 const CAP_LABEL: Record<string, string> = {
@@ -378,7 +385,7 @@ export default function ModelConfigPage() {
                   </li>
                   <li>
                     至少配置 <b>对话(chat)</b> 与 <b>向量(embedding)</b> 两类；想看图配
-                    <b>多模态</b>，想联网问答配<b>联网搜索</b>，想提升检索精度配 <b>rerank</b>，想语音输入配 <b>ASR</b>。
+                    <b>多模态</b>，想联网问答配<b>联网搜索</b>，想提升检索精度配 <b>rerank</b>，想语音输入配 <b>ASR</b>，想深度研究跨模型审稿配 <b>Verifier</b>。
                   </li>
                 </ol>
 
@@ -393,6 +400,7 @@ export default function ModelConfigPage() {
                     { name: 'Rerank 重排', tag: '可选', desc: '对知识库检索结果重新排序，提升相关度。不配也能用，配了检索更准。', provider: '通义 gte-rerank' },
                     { name: '联网搜索 Websearch', tag: '可选', desc: '让 AI 能查实时信息（新闻/股价/天气）。配了并在对话开启联网开关才生效。', provider: '百度千帆 / Tavily' },
                     { name: '语音识别 ASR', tag: '可选', desc: '把语音转文字，对话输入框的麦克风用它（更准）。不配则用浏览器免费识别。', provider: '通义千问 paraformer-v2 / OpenAI whisper-1' },
+                    { name: '审稿 Verifier', tag: '可选', desc: '深度研究 Verifier Loop 的独立审稿模型。建议与对话模型用不同供应商（跨家族），避免自评偏乐观。配好并设为默认后会自动用于跨模型审稿；不配则回退为同模型自评。', provider: '智谱 glm-4-flash / 通义 qwen-plus（与对话模型错开家族）' },
                   ].map((m) => (
                     <div key={m.name} className="model-type-item">
                       <div className="model-type-item__head">
