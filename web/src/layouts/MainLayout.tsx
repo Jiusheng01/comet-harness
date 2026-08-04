@@ -161,6 +161,13 @@ export default function MainLayout() {
   const playerVisible = useMusicStore((s) => s.visible)
   const needPlayerPadding = playerVisible && !immersive
 
+  // 主壳挂载时锁死 html/body 滚动（比 :has 更稳），卸载后恢复登录/分享页整页滚动
+  useEffect(() => {
+    const root = document.documentElement
+    root.classList.add('app-shell-active')
+    return () => root.classList.remove('app-shell-active')
+  }, [])
+
   const onLogout = async () => {
     await logout()
     message.success('已退出登录')
@@ -228,7 +235,10 @@ export default function MainLayout() {
   }
 
   return (
-    <Layout style={{ height: '100%' }} className={immersive ? 'immersive-layout' : ''}>
+    <Layout
+      style={{ height: '100%', overflow: 'hidden' }}
+      className={`app-shell${immersive ? ' immersive-layout' : ''}`}
+    >
       {/* 桌面端：常驻可折叠侧边栏 */}
       {!isMobile && (
         <Sider
@@ -238,8 +248,6 @@ export default function MainLayout() {
           trigger={null}
           collapsedWidth={72}
           style={{
-            display: 'flex',
-            flexDirection: 'column',
             borderInlineEnd: immersive
               ? '1px solid rgba(255,255,255,0.08)'
               : '1px solid #f0f0f0',
@@ -250,7 +258,9 @@ export default function MainLayout() {
           }}
         >
           {brand(collapsed)}
-          <div style={{ flex: 1, overflowY: 'auto', paddingBottom: 12 }}>{navMenu(collapsed)}</div>
+          <div className="app-shell-sider-menu" style={{ paddingBottom: 12 }}>
+            {navMenu(collapsed)}
+          </div>
         </Sider>
       )}
 
@@ -263,20 +273,29 @@ export default function MainLayout() {
           width={236}
           closable={false}
           styles={{
-            body: { padding: 0 },
+            body: { padding: 0, display: 'flex', flexDirection: 'column', height: '100%' },
             content: immersive
               ? { background: 'linear-gradient(180deg, #141633 0%, #0c0d18 100%)' }
               : undefined,
           }}
         >
           {brand(false)}
-          <div style={{ overflowY: 'auto', paddingBottom: 12 }}>{navMenu(false)}</div>
+          <div className="app-shell-sider-menu" style={{ paddingBottom: 12 }}>
+            {navMenu(false)}
+          </div>
         </Drawer>
       )}
 
-      <Layout style={{ background: immersive ? '#0b0c16' : undefined, transition: 'background 0.4s' }}>
+      <Layout
+        className="app-shell-main"
+        style={{
+          background: immersive ? '#0b0c16' : undefined,
+          transition: 'background 0.4s',
+        }}
+      >
         <Header
           style={{
+            flexShrink: 0,
             paddingInline: isMobile ? 12 : 24,
             display: 'flex',
             alignItems: 'center',
@@ -467,10 +486,10 @@ export default function MainLayout() {
             </Dropdown>
           </Header>
           <Content
+            className="app-shell-content"
             style={{
               padding: isMobile ? 14 : 24,
               paddingBottom: needPlayerPadding ? (isMobile ? 96 : 120) : undefined,
-              overflow: 'auto',
             }}
           >
             <Outlet />

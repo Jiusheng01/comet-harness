@@ -38,6 +38,13 @@ import {
   type ToolRunStatus,
 } from '@/api/chat'
 import { favoriteApi } from '@/api/favorites'
+
+/** 过滤 noop/无效 trace（全 0 UUID 来自 tracing 关闭或采样跳过） */
+function validTraceId(id?: string | null): string | undefined {
+  if (!id) return undefined
+  if (id === '00000000-0000-0000-0000-000000000000') return undefined
+  return id
+}
 import { AuthenticatedImage } from '@/components/AuthenticatedImage'
 import VoiceInputButton from '@/components/VoiceInputButton'
 import MessageItem from './chat/MessageItem'
@@ -324,14 +331,14 @@ export default function ChatPage() {
       favResp.data.forEach((f) => {
         favByMsg[f.target_id] = f.id
       })
-      setMessages(
+          setMessages(
         data.map((m: ChatMessage) => ({
           id: m.id,
           role: m.role as 'user' | 'assistant',
           content: m.content,
           citations: m.meta_data?.citations,
           toolCalls: m.meta_data?.tool_calls,
-          traceId: m.meta_data?.trace_id,
+          traceId: validTraceId(m.meta_data?.trace_id),
           images: m.images,
           attachments: m.meta_data?.attachments?.map((a) => ({
             file_name: a.file_name,
@@ -394,13 +401,17 @@ export default function ChatPage() {
       {
         onResume: (d) => {
           ensurePlaceholder(d.content || '')
-          if (d.citations?.length) {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === resumeMsgId ? { ...m, citations: d.citations } : m,
-              ),
-            )
-          }
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === resumeMsgId
+                ? {
+                    ...m,
+                    citations: d.citations?.length ? d.citations : m.citations,
+                    traceId: validTraceId(d.trace_id) ?? m.traceId,
+                  }
+                : m,
+            ),
+          )
         },
         onToken: (t) => {
           ensurePlaceholder('')
@@ -420,6 +431,13 @@ export default function ChatPage() {
             prev.map((m) => (m.id === resumeMsgId ? { ...m, citations: cites } : m)),
           )
         },
+        onTrace: (d) => {
+          const tid = validTraceId(d.trace_id)
+          if (!tid) return
+          setMessages((prev) =>
+            prev.map((m) => (m.id === resumeMsgId ? { ...m, traceId: tid } : m)),
+          )
+        },
         onDone: (d) => {
           settleRunningToolRuns(resumeMsgId, 'success')
           setMessages((prev) =>
@@ -431,6 +449,7 @@ export default function ChatPage() {
                     id: d.message_id ?? m.id,
                     conversationId: d.conversation_id,
                     createdAt: m.createdAt ?? new Date().toISOString(),
+                    traceId: validTraceId(d.trace_id) ?? m.traceId,
                   }
                 : m,
             ),
@@ -461,6 +480,7 @@ export default function ChatPage() {
                               content: last.content,
                               citations: last.meta_data?.citations,
                               toolCalls: last.meta_data?.tool_calls,
+                              traceId: validTraceId(last.meta_data?.trace_id),
                               conversationId: convId,
                               feedback: last.feedback ?? null,
                               createdAt: last.created_at,
@@ -731,8 +751,10 @@ export default function ChatPage() {
         },
         onTrace: (d) => {
           // 这一轮对话的执行轨迹 id —— 给 AI 气泡加「查看执行轨迹」按钮用
+          const tid = validTraceId(d.trace_id)
+          if (!tid) return
           setMessages((prev) =>
-            prev.map((m) => (m.id === aiMsg.id ? { ...m, traceId: d.trace_id } : m)),
+            prev.map((m) => (m.id === aiMsg.id ? { ...m, traceId: tid } : m)),
           )
         },
         onDone: (d) => {
@@ -746,6 +768,7 @@ export default function ChatPage() {
                     id: d.message_id ?? m.id,
                     conversationId: d.conversation_id,
                     createdAt: m.createdAt ?? new Date().toISOString(),
+                    traceId: validTraceId(d.trace_id) ?? m.traceId,
                   }
                 : m,
             ),

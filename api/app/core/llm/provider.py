@@ -1,7 +1,7 @@
 """Provider 元信息与连接测试。
 
 所有 provider 走 OpenAI 兼容协议：
-- chat/multimodal：POST {base_url}/chat/completions
+- chat/multimodal/verifier：POST {base_url}/chat/completions
 - embedding：POST {base_url}/embeddings
 - rerank：POST {base_url}/rerank
 连接测试发一个最小请求，验证 key/base_url/model 是否可用。
@@ -53,7 +53,7 @@ async def test_connection(
                     },
                 )
             else:
-                # chat / multimodal 都用 chat/completions 最小请求
+                # chat / multimodal / verifier 都用 chat/completions 最小请求
                 resp = await client.post(
                     f"{base}/chat/completions",
                     headers=headers,

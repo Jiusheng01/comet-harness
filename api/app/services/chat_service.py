@@ -452,6 +452,7 @@ class ChatService:
                     "content": buf.get("content", ""),
                     "citations": buf.get("citations", []),
                     "tool_calls": buf.get("tool_calls", []),
+                    "trace_id": buf.get("trace_id"),
                 },
             )
             async for sse in self._relay(pubsub, cid, skip_token_before=seen):
@@ -510,18 +511,20 @@ class ChatService:
         tool_calls: list[dict] = []
         citations: list[dict] = []
         n = 0
+        # 真实采样到的 trace_id；noop/关闭 tracing 时保持 None，避免写入全 0 UUID
+        trace_id_str: str | None = None
 
         async def _flush_buffer(status: str = "generating") -> None:
-            await bus.set_stream_buffer(
-                cid,
-                {
-                    "content": full_text,
-                    "n": n,
-                    "citations": citations,
-                    "tool_calls": tool_calls,
-                    "status": status,
-                },
-            )
+            payload: dict = {
+                "content": full_text,
+                "n": n,
+                "citations": citations,
+                "tool_calls": tool_calls,
+                "status": status,
+            }
+            if trace_id_str:
+                payload["trace_id"] = trace_id_str
+            await bus.set_stream_buffer(cid, payload)
 
         try:
             tracer = get_tracer()
@@ -532,8 +535,11 @@ class ChatService:
                 task_id=conv_id,
                 task_name=(user_text[:120] or "(空)"),
             ) as tctx:
-                # 给前端发个 trace_id(可用作未来「查看执行轨迹」按钮)
-                await bus.publish(cid, "trace", {"trace_id": str(tctx.trace_id)})
+                if not getattr(tctx, "is_noop", False):
+                    trace_id_str = str(tctx.trace_id)
+                    # 尽早推给前端；续传缓冲里也会带上，避免错过 SSE 事件后按钮消失
+                    await bus.publish(cid, "trace", {"trace_id": trace_id_str})
+                    await _flush_buffer("generating")
                 async with SessionLocal() as session:
                     svc = ChatService(session)
                     conv = await svc.conv_repo.get(user_id, conv_id)
@@ -594,16 +600,18 @@ class ChatService:
 
                     full_text = full_text.strip()
                     # 落库 assistant 消息(带引用 + 工具调用元信息 + trace_id 便于前端跳「执行轨迹」)
+                    meta: dict = {
+                        "citations": citations,
+                        "tool_calls": tool_calls,
+                    }
+                    if trace_id_str:
+                        meta["trace_id"] = trace_id_str
                     assistant_msg = await svc.msg_repo.add(
                         Message(
                             conversation_id=conv_id,
                             role=ROLE_ASSISTANT,
                             content=full_text,
-                            meta_data={
-                                "citations": citations,
-                                "tool_calls": tool_calls,
-                                "trace_id": str(tctx.trace_id),
-                            },
+                            meta_data=meta,
                         )
                     )
                     await svc.conv_repo.touch(conv_id)
@@ -617,15 +625,19 @@ class ChatService:
                     # 先清缓冲再广播 done：保证「订阅时缓冲若仍在=done 尚未发出」，
                     # 重连方据此不会订到一个已结束、done 已错过的频道而空等（见 resume_events）。
                     await bus.clear_stream_buffer(cid)
-                await bus.publish(
-                    cid,
-                    "done",
-                    {"conversation_id": cid, "message_id": str(assistant_msg.id)},
-                )
+                done_payload: dict = {
+                    "conversation_id": cid,
+                    "message_id": str(assistant_msg.id),
+                }
+                if trace_id_str:
+                    done_payload["trace_id"] = trace_id_str
+                await bus.publish(cid, "done", done_payload)
         except Exception as e:
             logger.error("问答后台生成失败: conv=%s err=%s", cid, e, exc_info=True)
             # 已生成部分内容也落库，避免完全丢失
-            await self._save_partial_on_error(conv_id, full_text, citations, tool_calls)
+            await self._save_partial_on_error(
+                conv_id, full_text, citations, tool_calls, trace_id=trace_id_str
+            )
             await bus.clear_stream_buffer(cid)
             await bus.publish(cid, "error", {"message": f"生成失败：{e}"})
         finally:
@@ -752,23 +764,27 @@ class ChatService:
         full_text: str,
         citations: list[dict],
         tool_calls: list[dict],
+        trace_id: str | None = None,
     ) -> None:
         """后台生成异常时，把已生成的部分回复落库，避免完全丢失。失败只记 warning。"""
         text = (full_text or "").strip()
         if not text:
             return
         try:
+            meta: dict = {
+                "citations": citations,
+                "tool_calls": tool_calls,
+                "interrupted": True,
+            }
+            if trace_id:
+                meta["trace_id"] = trace_id
             async with SessionLocal() as session:
                 await MessageRepository(session).add(
                     Message(
                         conversation_id=conv_id,
                         role=ROLE_ASSISTANT,
                         content=text,
-                        meta_data={
-                            "citations": citations,
-                            "tool_calls": tool_calls,
-                            "interrupted": True,
-                        },
+                        meta_data=meta,
                     )
                 )
                 await ConversationRepository(session).touch(conv_id)

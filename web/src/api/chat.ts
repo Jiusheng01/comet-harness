@@ -94,7 +94,11 @@ export interface StreamHandlers {
   }) => void
   onToolCall?: (d: ToolCall) => void
   onCitation?: (citations: Citation[]) => void
-  onDone?: (d: { conversation_id: string; message_id?: string }) => void
+  onDone?: (d: {
+    conversation_id: string
+    message_id?: string
+    trace_id?: string
+  }) => void
   onError?: (message: string) => void
   // 这一轮对话的执行轨迹 id(用于在 AI 气泡上直接展示「查看执行轨迹」按钮)
   onTrace?: (d: { trace_id: string }) => void
@@ -103,6 +107,7 @@ export interface StreamHandlers {
     content: string
     citations?: Citation[]
     tool_calls?: ToolCall[]
+    trace_id?: string
   }) => void
   // 没有进行中的生成（已结束/无）：前端据此结束续传、去重拉历史
   onIdle?: () => void
