@@ -15,7 +15,12 @@
 import re
 from collections.abc import AsyncGenerator
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from app.core.harness.adapters import (
+    LangChainModelAdapter,
+    from_langchain_messages,
+)
+from app.core.harness.runtime import AgentRuntime, ExecutionContext
 from langchain_core.tools import StructuredTool
 from langchain_openai import ChatOpenAI
 
@@ -32,99 +37,31 @@ async def run_function_calling(
     messages: list,
     stats_holder: dict[str, dict] | None = None,
 ) -> AsyncGenerator[dict, None]:
-    """强模型路径：原生 function calling 流式工具循环。"""
+    """强模型路径：由 Harness AgentRuntime 驱动 Function Calling。"""
 
-    model_with_tools = model.bind_tools(tools) if tools else model
-    full_text = ""
     stats_holder = stats_holder if stats_holder is not None else {}
+
+    model_adapter = LangChainModelAdapter(model)
+
     tool_executor = ToolExecutor(
         tools=tools,
         stats_holder=stats_holder,
     )
 
-    # 取真实 model_name 用于成本核算(LangChain ChatOpenAI 的 model_name 字段)
-    chat_model_name = getattr(model, "model_name", None) or getattr(model, "model", "chat")
-    tracer = get_tracer()
+    ctx = ExecutionContext(
+        messages=from_langchain_messages(messages),
+        stats_holder=stats_holder,
+        max_iterations=MAX_TOOL_ITERATIONS,
+    )
 
-    for iteration in range(MAX_TOOL_ITERATIONS):
-        # 每轮 LLM 流式调用包一个 llm_call span,流完后从 usage_metadata 抽 token
-        # 抓最后一条 user/tool 消息做请求摘要
-        last_msg_text = ""
-        for m in reversed(messages):
-            content = getattr(m, "content", None)
-            if isinstance(content, str) and content:
-                last_msg_text = content
-                break
-        async with tracer.llm_span(
-            f"chat:{chat_model_name} (轮 {iteration + 1})",
-            model_name=chat_model_name,
-            attributes={
-                "comet.chat.iteration": iteration + 1,
-                "comet.chat.tools_bound": len(tools),
-            },
-        ) as lsp:
-            lsp.set_payload("messages_count", len(messages))
-            if last_msg_text:
-                lsp.set_payload("request_summary", last_msg_text[:600])
-            gathered = None
-            iter_text = ""
-            async for chunk in model_with_tools.astream(messages):
-                if chunk.content:
-                    text = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
-                    full_text += text
-                    iter_text += text
-                    yield {"type": "token", "text": text}
-                gathered = chunk if gathered is None else gathered + chunk
-            # 抽 token 用量(stream_usage=True 后流尾的 chunk 带 usage_metadata)
-            usage = getattr(gathered, "usage_metadata", None) or {}
-            in_t = int(usage.get("input_tokens", 0) or 0)
-            out_t = int(usage.get("output_tokens", 0) or 0)
-            cached = int((usage.get("input_token_details") or {}).get("cache_read", 0) or 0)
-            lsp.set_tokens(input=in_t, output=out_t, cached=cached, model_name=chat_model_name)
-            tool_calls = getattr(gathered, "tool_calls", None) or []
-            lsp.set_payload("tool_calls_count", len(tool_calls))
-            if iter_text:
-                lsp.set_payload("response_preview", iter_text[:600])
-            elif tool_calls:
-                # 没有文本输出但触发了工具:展示工具调用意图
-                lsp.set_payload(
-                    "response_preview",
-                    "(本轮无文字输出,触发工具:" + ", ".join(tc.get("name", "?") for tc in tool_calls[:5]) + ")",
-                )
+    runtime = AgentRuntime(
+        model=model_adapter,
+        tool_executor=tool_executor,
+        model_tools=tools,
+    )
 
-        if not tool_calls:
-            # 无工具调用 → 已是最终回答
-            yield {"type": "final", "text": full_text}
-            return
-
-        # 有工具调用：执行后把结果回灌，继续循环
-        messages.append(gathered)
-        for tc in tool_calls:
-            name = tc.get("name", "")
-            args = tc.get("args", {}) or {}
-            query = str(args.get("query", "") or "")
-
-            yield {
-                "type": "tool_start",
-                "tool": name,
-                "query": query,
-            }
-
-            result = await tool_executor.execute(
-                tool_name=name,
-                args=args,
-            )
-
-            yield result.to_event()
-
-            messages.append(
-                ToolMessage(
-                    content=result.content,
-                    tool_call_id=tc.get("id", name),
-                )
-            )
-    # 达到最大迭代仍未收敛：用现有内容兜底
-    yield {"type": "final", "text": full_text or "（未能生成回答）"}
+    async for event in runtime.run(ctx):
+        yield event
 
 
 _ACTION_RE = re.compile(r"Action\s*:\s*(.+)")
