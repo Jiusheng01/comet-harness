@@ -73,3 +73,4 @@ class ExecutionContext:
     messages: list[HarnessMessage]
     stats_holder: dict[str, dict[str, Any]] = field(default_factory=dict)
     max_iterations: int = 5
+    user_input: str = ""
