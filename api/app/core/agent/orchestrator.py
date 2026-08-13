@@ -26,6 +26,7 @@ from app.core.harness.adapters import (
     LangChainModelAdapter,
     from_langchain_messages,
 )
+from app.core.harness.context import ContextManager
 from app.core.harness.runtime import (
     AgentRuntime,
     ExecutionContext,
@@ -35,6 +36,7 @@ from app.core.harness.runtime import (
 from app.core.harness.tools.executor import ToolExecutor
 
 MAX_TOOL_ITERATIONS = 5
+
 
 async def run_function_calling(
     model: ChatOpenAI,
@@ -53,6 +55,8 @@ async def run_function_calling(
         stats_holder=stats_holder,
     )
 
+    context_manager = ContextManager()
+
     ctx = ExecutionContext(
         messages=from_langchain_messages(messages),
         stats_holder=stats_holder,
@@ -63,6 +67,7 @@ async def run_function_calling(
         model=model_adapter,
         tool_executor=tool_executor,
         model_tools=tools,
+        context_manager=context_manager,
     )
 
     async for event in runtime.run(ctx):
@@ -112,6 +117,8 @@ async def run_react(
         user_input=user_text,
     )
 
+    context_manager = ContextManager()
+
     model_adapter = LangChainModelAdapter(model)
 
     tool_executor = ToolExecutor(
@@ -122,6 +129,7 @@ async def run_react(
     runtime = ReactRuntime(
         model=model_adapter,
         tool_executor=tool_executor,
+        context_manager=context_manager,
     )
 
     async for event in runtime.run(ctx):

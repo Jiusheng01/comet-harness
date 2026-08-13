@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from app.core.agent.tracing import get_tracer
+from app.core.harness.context import ContextManager
 from app.core.harness.runtime.contracts import (
     ExecutionContext,
     HarnessMessage,
@@ -31,10 +32,12 @@ class AgentRuntime:
         model: ModelAdapter,
         tool_executor: ToolExecutor,
         model_tools: list[Any],
+        context_manager: ContextManager,
     ) -> None:
         self._model = model
         self._tool_executor = tool_executor
         self._model_tools = model_tools
+        self._context_manager = context_manager
 
     async def run(
         self,
@@ -46,7 +49,8 @@ class AgentRuntime:
         tracer = get_tracer()
 
         for iteration in range(ctx.max_iterations):
-            last_message_text = self._last_message_text(ctx.messages)
+            prepared = self._context_manager.prepare(ctx.messages)
+            last_message_text = self._last_message_text(prepared.messages)
 
             turn: ModelTurn | None = None
             iteration_text = ""
@@ -62,7 +66,44 @@ class AgentRuntime:
             ) as span:
                 span.set_payload(
                     "messages_count",
-                    len(ctx.messages),
+                    len(prepared.messages),
+                )
+
+                span.set_payload(
+                    "context.original_messages",
+                    prepared.stats.original_messages,
+                )
+                span.set_payload(
+                    "context.final_messages",
+                    prepared.stats.final_messages,
+                )
+                span.set_payload(
+                    "context.original_tokens",
+                    prepared.stats.original_tokens,
+                )
+                span.set_payload(
+                    "context.final_tokens",
+                    prepared.stats.final_tokens,
+                )
+                span.set_payload(
+                    "context.dropped_messages",
+                    prepared.stats.dropped_messages,
+                )
+                span.set_payload(
+                    "context.dropped_blocks",
+                    prepared.stats.dropped_blocks,
+                )
+                span.set_payload(
+                    "context.truncated_tool_messages",
+                    prepared.stats.truncated_tool_messages,
+                )
+                span.set_payload(
+                    "context.compacted",
+                    prepared.stats.compacted,
+                )
+                span.set_payload(
+                    "context.over_budget",
+                    prepared.stats.over_budget,
                 )
 
                 if last_message_text:
@@ -72,7 +113,7 @@ class AgentRuntime:
                     )
 
                 async for event in self._model.stream(
-                    ctx.messages,
+                    prepared.messages,
                     self._model_tools,
                 ):
                     if event.type == "token":

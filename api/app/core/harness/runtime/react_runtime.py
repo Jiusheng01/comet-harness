@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from app.core.agent.tracing import get_tracer
+from app.core.harness.context import ContextManager
 from app.core.harness.runtime.contracts import (
     ExecutionContext,
     HarnessMessage,
@@ -35,9 +36,11 @@ class ReactRuntime:
         self,
         model: ModelAdapter,
         tool_executor: ToolExecutor,
+        context_manager: ContextManager,
     ) -> None:
         self._model = model
         self._tool_executor = tool_executor
+        self._context_manager = context_manager
 
     async def run(
         self,
@@ -46,6 +49,7 @@ class ReactRuntime:
         tracer = get_tracer()
 
         for iteration in range(ctx.max_iterations):
+            prepared = self._context_manager.prepare(ctx.messages)
             turn: ModelTurn | None = None
             response_text = ""
 
@@ -59,7 +63,7 @@ class ReactRuntime:
                 },
             ) as span:
                 async for event in self._model.stream(
-                    ctx.messages,
+                    prepared.messages,
                     [],
                 ):
                     if event.type == "token":
@@ -81,10 +85,45 @@ class ReactRuntime:
                     cached=turn.usage.cached_tokens,
                     model_name=self._model.model_name,
                 )
-
                 span.set_payload(
                     "messages_count",
-                    len(ctx.messages),
+                    len(prepared.messages),
+                )
+                span.set_payload(
+                    "context.original_messages",
+                    prepared.stats.original_messages,
+                )
+                span.set_payload(
+                    "context.final_messages",
+                    prepared.stats.final_messages,
+                )
+                span.set_payload(
+                    "context.original_tokens",
+                    prepared.stats.original_tokens,
+                )
+                span.set_payload(
+                    "context.final_tokens",
+                    prepared.stats.final_tokens,
+                )
+                span.set_payload(
+                    "context.dropped_messages",
+                    prepared.stats.dropped_messages,
+                )
+                span.set_payload(
+                    "context.dropped_blocks",
+                    prepared.stats.dropped_blocks,
+                )
+                span.set_payload(
+                    "context.truncated_tool_messages",
+                    prepared.stats.truncated_tool_messages,
+                )
+                span.set_payload(
+                    "context.compacted",
+                    prepared.stats.compacted,
+                )
+                span.set_payload(
+                    "context.over_budget",
+                    prepared.stats.over_budget,
                 )
 
                 if text:
