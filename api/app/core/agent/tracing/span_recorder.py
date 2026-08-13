@@ -162,15 +162,34 @@ class SpanRecorder:
             raise
 
     async def _flush(self, events: list[_SpanEvent]) -> None:
-        """把一批事件落库。"""
+        """把一批事件按父子依赖顺序落库。
+
+        agent_spans.trace_id 外键依赖 agent_traces.trace_id，
+        因此必须确保 trace_create 已 flush 后再写 span。
+        """
         async for session in get_session():
+            # Phase 1: 先创建父 Trace
             for ev in events:
                 if ev.kind == "trace_create" and ev.trace:
                     session.add(_trace_to_orm(ev.trace))
-                elif ev.kind == "span_create" and ev.span:
+
+            # 强制 INSERT agent_traces，保证后续 span 外键可见
+            await session.flush()
+
+            # Phase 2: 再创建子 Span
+            for ev in events:
+                if ev.kind == "span_create" and ev.span:
                     session.add(_span_to_orm(ev.span))
-                elif ev.kind == "trace_update" and ev.trace:
+
+            # 在 trace_update 触发 SQL/autoflush 前，
+            # 先显式完成所有 span INSERT
+            await session.flush()
+
+            # Phase 3: 最后更新 Trace 聚合状态
+            for ev in events:
+                if ev.kind == "trace_update" and ev.trace:
                     await _update_trace(session, ev.trace)
+
             await session.commit()
             break
 
