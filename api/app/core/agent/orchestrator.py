@@ -26,6 +26,8 @@ from app.core.agent.prompt_renderer import render_agent_prompt
 from app.core.agent.tracing import get_tracer
 from app.core.logging import get_logger
 
+from app.core.harness.tools.executor import ToolExecutor
+
 logger = get_logger(__name__)
 
 MAX_TOOL_ITERATIONS = 5
@@ -104,13 +106,15 @@ async def run_function_calling(
     stats_holder: dict[str, dict] | None = None,
 ) -> AsyncGenerator[dict, None]:
     """强模型路径：原生 function calling 流式工具循环。"""
-    tool_map = {t.name: t for t in tools}
+
     model_with_tools = model.bind_tools(tools) if tools else model
     full_text = ""
     stats_holder = stats_holder if stats_holder is not None else {}
-    # 同一轮内的工具调用结果缓存：(工具名+参数) 相同则复用上次结果，
-    # 不再重复握手+执行（消除模型用相同参数重复调同一工具的浪费）。
-    call_cache: dict[str, str] = {}
+    tool_executor = ToolExecutor(
+        tools=tools,
+        stats_holder=stats_holder,
+    )
+
     # 取真实 model_name 用于成本核算(LangChain ChatOpenAI 的 model_name 字段)
     chat_model_name = getattr(model, "model_name", None) or getattr(model, "model", "chat")
     tracer = get_tracer()
@@ -171,80 +175,27 @@ async def run_function_calling(
         for tc in tool_calls:
             name = tc.get("name", "")
             args = tc.get("args", {}) or {}
-            query = args.get("query", "")
-            yield {"type": "tool_start", "tool": name, "query": query}
-            try:
-                cache_key = f"{name}:{json.dumps(args, ensure_ascii=False, sort_keys=True)}"
-            except (TypeError, ValueError):
-                cache_key = f"{name}:{args}"
-            tool = tool_map.get(name)
-            status = "success"
-            t0 = time.monotonic()
-            cached = call_cache.get(cache_key)
-            if cached is not None:
-                # 命中本轮缓存：相同工具+参数已调用过，直接复用，跳过握手与执行
-                formatted = cached
-                latency_ms = 0
-                stats: dict = {}
-                yield {
-                    "type": "tool_result",
-                    "tool": name,
-                    "query": query,
-                    "status": "success",
-                    "text": _truncate(formatted),
-                    "stats": stats,
-                    "latency_ms": latency_ms,
-                    "cached": True,
-                }
-                messages.append(
-                    ToolMessage(content=formatted, tool_call_id=tc.get("id", name))
-                )
-                continue
-            if tool is None:
-                observation = f"未知工具：{name}"
-                status = "error"
-            else:
-                tracer = get_tracer()
-                async with tracer.span(
-                    f"工具:{name}",
-                    span_type="tool_call",
-                    attributes={
-                        "comet.tool.name": name,
-                        "comet.tool.query": str(query)[:200],
-                    },
-                ) as tsp:
-                    try:
-                        observation = await tool.ainvoke(args)
-                    except Exception as e:
-                        observation = f"工具执行失败：{e}"
-                        status = "error"
-                        tsp.mark_error(str(e))
-                    obs_str = str(observation) if observation else ""
-                    tsp.set_payload("status", status)
-                    tsp.set_payload("output_chars", len(obs_str))
-                    if obs_str:
-                        # 工具返回内容前 600 字预览,供 trace 详情面板展示
-                        tsp.set_payload("output_preview", obs_str[:600])
-                    if query:
-                        tsp.set_payload("tool_query", str(query)[:300])
-            latency_ms = int((time.monotonic() - t0) * 1000)
-            stats = stats_holder.pop(name, {}) if stats_holder is not None else {}
-            formatted = _format_observation(observation)
-            if status == "success":
-                call_cache[cache_key] = formatted
+            query = str(args.get("query", "") or "")
+
             yield {
-                "type": "tool_result",
+                "type": "tool_start",
                 "tool": name,
                 "query": query,
-                "status": status,
-                "text": _truncate(formatted),
-                "stats": stats,
-                "latency_ms": latency_ms,
             }
-            messages.append(
-                ToolMessage(content=formatted, tool_call_id=tc.get("id", name))
+
+            result = await tool_executor.execute(
+                tool_name=name,
+                args=args,
             )
 
+            yield result.to_event()
+
+            messages.append(
+                ToolMessage(
+                    content=result.content,
+                    tool_call_id=tc.get("id", name),
+                )
+            )
     # 达到最大迭代仍未收敛：用现有内容兜底
     yield {"type": "final", "text": full_text or "（未能生成回答）"}
 
