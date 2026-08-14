@@ -1,7 +1,9 @@
-/* Wide-screen home refinements. Keep the base home.css conservative and layer
-   dashboard-specific density/scale adjustments here. */
+/* Wide-screen dashboard refinements. */
 @media (min-width: 1180px) {
   .comet-home {
+    min-height: calc(100vh - 104px);
+    display: grid;
+    grid-template-rows: auto auto minmax(220px, 1fr) auto;
     gap: 16px;
   }
 
@@ -11,11 +13,15 @@
   }
 
   .comet-hero__content {
-    max-width: 620px;
+    max-width: 640px;
   }
 
   .comet-hero__title {
-    font-size: clamp(30px, 2.1vw, 42px);
+    font-size: clamp(32px, 2.2vw, 44px);
+  }
+
+  .comet-hero__subtitle {
+    font-size: 16px;
   }
 
   .comet-hero__art {
@@ -27,7 +33,7 @@
   .comet-home__top-grid,
   .comet-home__bottom-grid {
     gap: 16px;
-    align-items: start;
+    align-items: stretch;
   }
 
   .comet-home__right-stack {
@@ -36,12 +42,24 @@
   }
 
   .comet-card__header {
-    min-height: 50px;
+    min-height: 52px;
+    font-size: 15px;
+  }
+
+  .comet-text-link {
     font-size: 14px;
   }
 
   .comet-recent-card {
     min-height: 0;
+  }
+
+  .comet-recent-tabs {
+    height: 50px;
+  }
+
+  .comet-recent-tabs button {
+    font-size: 14px;
   }
 
   .comet-recent-list {
@@ -50,16 +68,22 @@
   }
 
   .comet-recent-item {
-    min-height: 58px;
+    min-height: 62px;
   }
 
   .comet-recent-item__body strong,
   .comet-task-item__body strong {
-    font-size: 14px;
+    font-size: 15px;
+  }
+
+  .comet-recent-item__body small,
+  .comet-task-item__body small,
+  .comet-recent-item__time {
+    font-size: 13px;
   }
 
   .comet-recent-card__more {
-    margin: 8px 20px 14px;
+    margin: 10px 20px 15px;
   }
 
   .comet-review-card {
@@ -67,12 +91,20 @@
   }
 
   .comet-review-card__body {
-    min-height: 112px;
-    padding: 20px 94px 18px 20px;
+    min-height: 120px;
+    padding: 22px 98px 20px 22px;
+  }
+
+  .comet-review-card__copy strong {
+    font-size: 15px;
+  }
+
+  .comet-review-card__copy p {
+    font-size: 13px;
   }
 
   .comet-review-card__cup {
-    top: 28px;
+    top: 30px;
   }
 
   .comet-task-card {
@@ -80,43 +112,74 @@
   }
 
   .comet-task-list {
-    padding: 2px 12px 6px;
+    padding: 3px 12px 7px;
   }
 
   .comet-task-card .comet-empty {
-    min-height: 50px;
+    min-height: 56px;
+    font-size: 14px;
   }
 
   .comet-knowledge-card,
   .comet-runtime-card {
     min-height: 0;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
   }
 
   .comet-knowledge-grid {
-    gap: 10px;
-    padding: 14px 20px 12px;
+    gap: 12px;
+    padding: 16px 20px 14px;
   }
 
   .comet-knowledge-item {
-    min-height: 82px;
+    min-height: 88px;
+  }
+
+  .comet-knowledge-item strong {
+    font-size: 14px;
+  }
+
+  .comet-knowledge-item small {
+    font-size: 13px;
   }
 
   .comet-runtime-grid {
-    gap: 8px 10px;
-    padding: 14px 20px 12px;
+    gap: 10px 12px;
+    padding: 16px 20px 14px;
   }
 
   .comet-runtime-item {
-    min-height: 52px;
+    min-height: 58px;
+  }
+
+  .comet-runtime-item strong {
+    font-size: 13px;
+  }
+
+  .comet-runtime-item small {
+    font-size: 12px;
   }
 
   .comet-knowledge-footer,
   .comet-runtime-footer {
-    min-height: 48px;
+    min-height: 52px;
+    margin-top: auto;
+    font-size: 13px;
+  }
+
+  .comet-home__footer {
+    padding-bottom: 0;
+    font-size: 12px;
   }
 }
 
 @media (min-width: 1700px) {
+  .comet-home {
+    grid-template-rows: auto auto minmax(250px, 1fr) auto;
+  }
+
   .comet-hero {
     min-height: 232px;
   }
