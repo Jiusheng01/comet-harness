@@ -554,18 +554,35 @@ function SpanDetailContent({ span, isMobile }: { span: SpanItem; isMobile: boole
               <div
                 key={k}
                 style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: 12,
+                  display: 'grid',
+                  gridTemplateColumns: isMobile
+                    ? '1fr'
+                    : '220px minmax(0, 1fr)',
+                  columnGap: 16,
+                  rowGap: 2,
                   padding: '8px 12px',
                   background: i % 2 === 0 ? '#ffffff' : '#f9fafb',
                   lineHeight: 1.6,
                 }}
               >
-                <span style={{ width: isMobile ? 90 : 110, flexShrink: 0, color: '#667085' }}>
+                <span
+                  style={{
+                    color: '#667085',
+                    overflowWrap: 'anywhere',
+                    wordBreak: 'break-word',
+                  }}
+                >
                   {fmtKey(k)}
                 </span>
-                <span style={{ flex: 1, color: '#171719', wordBreak: 'break-all', minWidth: 0 }}>
+
+                <span
+                  style={{
+                    color: '#171719',
+                    overflowWrap: 'anywhere',
+                    wordBreak: 'break-word',
+                    minWidth: 0,
+                  }}
+                >
                   {fmtValue(k, v)}
                 </span>
               </div>
