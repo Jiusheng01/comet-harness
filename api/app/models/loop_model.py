@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    DateTime,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -83,9 +84,15 @@ class LoopRun(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     started_at: Mapped[datetime] = mapped_column(
-        server_default=func.now(), nullable=False
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
     )
-    finished_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
 
 class LoopIteration(Base):
@@ -121,5 +128,7 @@ class LoopIteration(Base):
     # 本轮耗时(毫秒,含 generate + verify;repair 算在下一轮的 generate)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        server_default=func.now(), nullable=False
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
     )
