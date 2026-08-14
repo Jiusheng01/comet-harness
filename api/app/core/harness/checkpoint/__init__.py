@@ -1,3 +1,7 @@
+from app.core.harness.checkpoint.codec import (
+    decode_checkpoint,
+    encode_checkpoint,
+)
 from app.core.harness.checkpoint.models import (
     HarnessCheckpoint,
     RuntimeKind,
@@ -12,4 +16,6 @@ __all__ = [
     "HarnessCheckpoint",
     "InMemoryCheckpointStore",
     "RuntimeKind",
+    "decode_checkpoint",
+    "encode_checkpoint",
 ]
