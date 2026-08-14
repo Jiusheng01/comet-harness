@@ -5,6 +5,8 @@ import zhCN from 'antd/locale/zh_CN'
 import App from './App'
 import { theme } from './theme'
 import './index.css'
+import './layouts/MainLayout.css'
+import './pages/home-shell.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
