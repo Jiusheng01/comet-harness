@@ -1,0 +1,8 @@
+/* Home is a dashboard, so it should use the shell's available width instead of the generic centered page cap. */
+@media (min-width: 769px) {
+  .comet-home.fluid-page {
+    width: calc(100% + 24px);
+    max-width: none !important;
+    margin-inline: -12px !important;
+  }
+}
