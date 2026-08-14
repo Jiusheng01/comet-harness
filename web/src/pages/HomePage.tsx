@@ -1,56 +1,95 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Card, Col, Modal, Row, Tag, Tooltip } from 'antd'
+import { Button, Modal } from 'antd'
 import {
   ArrowRightOutlined,
   BookOutlined,
   BulbOutlined,
   CheckCircleFilled,
+  ClockCircleOutlined,
   CommentOutlined,
-  DeploymentUnitOutlined,
   ExperimentOutlined,
+  FolderOpenOutlined,
   HddOutlined,
-  RightOutlined,
+  MoreOutlined,
   SettingOutlined,
+  ShareAltOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import dayjs from 'dayjs'
-import {
-  dashboardApi,
-  type DailyReview,
-  type OverviewData,
-} from '@/api/dashboard'
-import { emotionApi, type EmotionProfile } from '@/api/emotion'
-import { memoryApi, type Insight } from '@/api/memories'
+import { dashboardApi, type DailyReview, type OverviewData } from '@/api/dashboard'
+import { chatApi, type Conversation } from '@/api/chat'
 import { researchApi, type ReportBrief } from '@/api/research'
+import { agentTaskApi, type AgentTask } from '@/api/agentTask'
+import { memoryApi } from '@/api/memories'
+import { knowledgeBaseApi } from '@/api/knowledgeBases'
 import { modelApi, type ModelConfigItem } from '@/api/models'
+import { traceApi, type TraceListItem } from '@/api/traces'
 import { useAuthStore } from '@/stores/authStore'
+import heroIllustration from '@/images/home-hero.svg'
+import './home.css'
 
 const WELCOME_SEEN_KEY = 'comet_welcome_seen'
 
-/**
- * 仪表盘 —— V0.0.5 收尾大瘦身:只保留日常真正高频用的 4 块。
- *
- * 保留:① 欢迎横幅 / ② 今日回顾+关怀 / ③ 新手引导(条件) / ④ 功能一览(主入口导航)
- *
- * 去掉:数据概览 6 KPI + 4 张大 ECharts(知识库分类/记忆新增/情绪趋势/情绪分布)
- *      + Agent 简报列表 + 快速提问输入框(对话页本身就一个输入框,仪表盘不需要二重)。
- *      Agent 工程指标(Loop 健康度 + 成本)迁去「执行轨迹 /traces」聚合在一起。
- */
+type RecentTab = 'chat' | 'research'
+
+function formatRelative(value?: string | null) {
+  if (!value) return '刚刚'
+  const time = dayjs(value)
+  if (!time.isValid()) return ''
+  const now = dayjs()
+  const minutes = now.diff(time, 'minute')
+  if (minutes < 1) return '刚刚'
+  if (minutes < 60) return `${minutes} 分钟前`
+  const hours = now.diff(time, 'hour')
+  if (hours < 24) return `${hours} 小时前`
+  if (now.diff(time, 'day') === 1) return `昨天 ${time.format('HH:mm')}`
+  return time.format('MM-DD HH:mm')
+}
+
+function researchStatusText(status: ReportBrief['status']) {
+  const labels: Record<ReportBrief['status'], string> = {
+    pending: '等待开始',
+    planning: '正在规划',
+    searching: '正在检索',
+    writing: '正在写作',
+    summarizing: '正在收尾',
+    done: '研究已完成',
+    failed: '研究失败',
+  }
+  return labels[status]
+}
+
+function taskScheduleText(task: AgentTask) {
+  if (task.trigger_type === 'interval') {
+    return `每 ${task.trigger_interval_hours ?? '-'} 小时`
+  }
+  if (task.trigger_type === 'weekly') {
+    const weekday = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][
+      task.trigger_weekday ?? 0
+    ]
+    return `每${weekday} ${task.trigger_time ?? ''}`.trim()
+  }
+  return `每天 ${task.trigger_time ?? ''}`.trim()
+}
+
 export default function HomePage() {
   const navigate = useNavigate()
   const user = useAuthStore((s) => s.user)
+
   const [review, setReview] = useState<DailyReview | null>(null)
   const [overview, setOverview] = useState<OverviewData | null>(null)
   const [models, setModels] = useState<ModelConfigItem[] | null>(null)
+  const [conversations, setConversations] = useState<Conversation[]>([])
+  const [reports, setReports] = useState<ReportBrief[]>([])
+  const [tasks, setTasks] = useState<AgentTask[]>([])
+  const [memoryTotal, setMemoryTotal] = useState(0)
+  const [relationTotal, setRelationTotal] = useState(0)
+  const [knowledgeBaseCount, setKnowledgeBaseCount] = useState(0)
+  const [traces, setTraces] = useState<TraceListItem[]>([])
+  const [traceLoaded, setTraceLoaded] = useState(false)
+  const [recentTab, setRecentTab] = useState<RecentTab>('chat')
   const [welcomeOpen, setWelcomeOpen] = useState(false)
-  // V0.0.5 仪表盘补三块"有意义"的卡:
-  // - 当前情绪画像(感知层面)
-  // - AI 眼中的你(洞察,记忆层面)
-  // - 最近一次研究(Agent 替你干活的痕迹)
-  const [emotion, setEmotion] = useState<EmotionProfile | null>(null)
-  const [insights, setInsights] = useState<Insight[]>([])
-  const [recentReport, setRecentReport] = useState<ReportBrief | null>(null)
 
   const closeWelcome = () => {
     localStorage.setItem(WELCOME_SEEN_KEY, '1')
@@ -59,8 +98,8 @@ export default function HomePage() {
 
   useEffect(() => {
     let cancelled = false
-    let pollTimer: ReturnType<typeof setTimeout> | null = null
-    let polls = 0
+    let reviewTimer: ReturnType<typeof setTimeout> | null = null
+    let reviewPolls = 0
 
     const fetchReview = () => {
       dashboardApi
@@ -68,528 +107,488 @@ export default function HomePage() {
         .then(({ data }) => {
           if (cancelled) return
           setReview(data)
-          if (data.generating && polls < 10) {
-            polls += 1
-            pollTimer = setTimeout(fetchReview, 3000)
+          if (data.generating && reviewPolls < 8) {
+            reviewPolls += 1
+            reviewTimer = setTimeout(fetchReview, 3000)
           }
         })
         .catch(() => {})
     }
 
-    void (async () => {
-      try {
-        // overview 仍要拉(下面 quickSteps 判断 documents/conversations 用),
-        // 但页面已不再渲染 6 KPI / 4 张图,只取 counts 字段。
-        const { data } = await dashboardApi.overview()
+    dashboardApi
+      .overview()
+      .then(({ data }) => {
         if (!cancelled) setOverview(data)
-      } catch {
-        // 统计失败不致命
-      }
-      modelApi
-        .list()
-        .then(({ data }) => setModels(data))
-        .catch(() => setModels([]))
-      fetchReview()
-      // 情绪 / 洞察 / 最近研究 —— 失败一律降级为空,不影响其他渲染
-      emotionApi
-        .current()
-        .then(({ data }) => {
-          if (!cancelled) setEmotion(data)
-        })
-        .catch(() => {})
-      memoryApi
-        .insights()
-        .then(({ data }) => {
-          if (!cancelled) setInsights(data)
-        })
-        .catch(() => {})
-      researchApi
-        .list(1, 5)
-        .then(({ data }) => {
-          if (cancelled) return
-          // 取最近 1 条已完成的研究
-          const first = data.items.find((it) => it.status === 'done') ?? null
-          setRecentReport(first)
-        })
-        .catch(() => {})
-    })()
+      })
+      .catch(() => {})
+
+    modelApi
+      .list()
+      .then(({ data }) => {
+        if (!cancelled) setModels(data)
+      })
+      .catch(() => {
+        if (!cancelled) setModels([])
+      })
+
+    chatApi
+      .listConversations()
+      .then(({ data }) => {
+        if (!cancelled) setConversations(data.slice(0, 8))
+      })
+      .catch(() => {})
+
+    researchApi
+      .list(1, 8)
+      .then(({ data }) => {
+        if (!cancelled) setReports(data.items)
+      })
+      .catch(() => {})
+
+    agentTaskApi
+      .list()
+      .then(({ data }) => {
+        if (!cancelled) setTasks(data.filter((task) => task.enabled))
+      })
+      .catch(() => {})
+
+    memoryApi
+      .list(1, 1)
+      .then(({ data }) => {
+        if (!cancelled) setMemoryTotal(data.total)
+      })
+      .catch(() => {})
+
+    memoryApi
+      .reviewOverview(30)
+      .then(({ data }) => {
+        if (!cancelled) setRelationTotal(data.total_relations)
+      })
+      .catch(() => {})
+
+    knowledgeBaseApi
+      .list()
+      .then(({ data }) => {
+        if (!cancelled) setKnowledgeBaseCount(data.length)
+      })
+      .catch(() => {})
+
+    traceApi
+      .list({ days: 30, limit: 40 })
+      .then(({ data }) => {
+        if (cancelled) return
+        setTraces(data.items)
+        setTraceLoaded(true)
+      })
+      .catch(() => {
+        if (!cancelled) setTraceLoaded(false)
+      })
+
+    fetchReview()
 
     return () => {
       cancelled = true
-      if (pollTimer) clearTimeout(pollTimer)
+      if (reviewTimer) clearTimeout(reviewTimer)
     }
   }, [])
 
-  const c = overview?.counts
-
-  // 快速开始:根据已配模型类型 + 是否有内容判断完成度
   const modelTypes = useMemo(
-    () => new Set((models ?? []).map((m) => m.type)),
+    () => new Set((models ?? []).map((model) => model.type)),
     [models],
   )
-  const hasChat = modelTypes.has('chat') || modelTypes.has('multimodal')
-  const hasEmbedding = modelTypes.has('embedding')
-  const hasDocs = (c?.documents ?? 0) > 0
-  const hasChatted = (c?.conversations ?? 0) > 0
+  const hasChatModel = modelTypes.has('chat') || modelTypes.has('multimodal')
+  const hasEmbeddingModel = modelTypes.has('embedding')
+  const needsSetup = models !== null && (!hasChatModel || !hasEmbeddingModel)
 
-  const quickSteps = [
-    {
-      done: hasChat,
-      title: '配置对话模型(必做)',
-      icon: <SettingOutlined />,
-      desc: '先去「模型配置」加一个对话大模型。推荐智谱 GLM / DeepSeek(注册即送免费额度)。',
-      action: () => navigate('/settings/models'),
-      btn: hasChat ? '已配置' : '去配置',
-    },
-    {
-      done: hasEmbedding,
-      title: '配置向量模型',
-      icon: <SettingOutlined />,
-      desc: '加一个 embedding 模型,知识库和记忆的语义检索靠它。',
-      action: () => navigate('/settings/models'),
-      btn: hasEmbedding ? '已配置' : '去配置',
-    },
-    {
-      done: hasDocs,
-      title: '建立你的知识库(可选)',
-      icon: <BookOutlined />,
-      desc: '上传文档或导入网页,系统自动分块、向量化,之后 AI 回答会引用你的资料。',
-      action: () => navigate('/knowledge'),
-      btn: hasDocs ? '去管理' : '去上传',
-    },
-    {
-      done: hasChatted,
-      title: '开始智能对话',
-      icon: <CommentOutlined />,
-      desc: '配好对话模型就能直接聊。AI 会自动调用知识库、记忆、联网工具回答。',
-      action: () => navigate('/chat'),
-      btn: hasChatted ? '继续对话' : '去对话',
-    },
-  ]
-
-  // 功能导航(精简到 6 个最高频入口)
-  const features = [
-    { icon: <CommentOutlined />, label: '智能对话', desc: 'Agent 工具编排问答', to: '/chat', color: '#155EEF' },
-    { icon: <BookOutlined />, label: '知识库', desc: '文档/网页 RAG 检索', to: '/knowledge', color: '#369F21' },
-    { icon: <HddOutlined />, label: '记忆图谱', desc: '实体关系与画像', to: '/memory', color: '#7C4DFF' },
-    { icon: <ExperimentOutlined />, label: '深度研究', desc: '一句话产出带来源报告', to: '/research', color: '#EB2F96' },
-    { icon: <DeploymentUnitOutlined />, label: '图谱可视化', desc: '关系网络与时间线', to: '/graph', color: '#FF8A34' },
-    { icon: <ThunderboltOutlined />, label: '执行轨迹', desc: 'Loop 健康度与成本', to: '/traces', color: '#FAAD14' },
-  ]
-
-  const allReady = hasChat && hasEmbedding
-  const finishedSteps = quickSteps.filter((s) => s.done).length
-  // 基础没配好(缺对话或向量模型)= 新用户态:首屏聚焦引导
-  // models 未加载完(null)时不判定,避免闪现
-  const needsSetup = models !== null && !allReady
-
-  // 欢迎引导:仅对「还没配好基础」的新用户首次弹一次,老用户不打扰
   useEffect(() => {
     if (needsSetup && !localStorage.getItem(WELCOME_SEEN_KEY)) {
       setWelcomeOpen(true)
     }
   }, [needsSetup])
 
-  // ── 区块 ──
+  const displayName = user?.nickname || user?.email || user?.username || '朋友'
+  const recentConversations = conversations.slice(0, 4)
+  const recentReports = reports.slice(0, 4)
+  const visibleTasks = [...tasks]
+    .sort((a, b) => {
+      if (!a.next_run_at) return 1
+      if (!b.next_run_at) return -1
+      return dayjs(a.next_run_at).valueOf() - dayjs(b.next_run_at).valueOf()
+    })
+    .slice(0, 2)
 
-  const welcomeModal = (
-    <Modal
-      open={welcomeOpen}
-      onCancel={closeWelcome}
-      centered
-      width={460}
-      footer={null}
-      title={null}
-    >
-      <div style={{ textAlign: 'center', padding: '8px 4px' }}>
-        <div style={{ fontSize: 34, marginBottom: 6 }}>👋</div>
-        <h2 style={{ margin: '0 0 8px', fontSize: 22 }}>欢迎使用彗记 Comet</h2>
-        <p style={{ color: '#475467', lineHeight: 1.85, margin: '0 0 14px' }}>
-          这是你的个人 AI 知识库 + 记忆助手:和 AI 对话、把文档/网页存进知识库让它引用、
-          它还会自动记住你聊过的事,越用越懂你。
-        </p>
-        <div
-          style={{
-            background: '#F2F7FF',
-            border: '1px solid #DBE7FF',
-            borderRadius: 12,
-            padding: '12px 16px',
-            textAlign: 'left',
-            color: '#1D2129',
-            lineHeight: 1.8,
-            marginBottom: 18,
-          }}
-        >
-          <b>开始前只需一步:</b>配置一个大模型 API。
-          <br />
-          推荐 <b>智谱 GLM</b> 或 <b>DeepSeek</b>(注册即送免费额度),
-          在「模型配置」页填入 API Key 即可。
-        </div>
-        <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
-          <Button
-            type="primary"
-            size="large"
-            onClick={() => {
-              closeWelcome()
-              navigate('/settings/models')
-            }}
-          >
-            去配置模型
-          </Button>
-          <Button size="large" onClick={closeWelcome}>
-            先随便逛逛
-          </Button>
-        </div>
-      </div>
-    </Modal>
+  const lastRecovery = traces.find((trace) =>
+    /recover|recovery|恢复/i.test(`${trace.task_type} ${trace.task_name ?? ''}`),
   )
+  const newestContent = overview?.recent?.[0]
 
-  const quickStartCard = (
-    <Card
-      style={{ marginBottom: 22, borderRadius: 16 }}
-      styles={{ body: { padding: 22 } }}
-      title={
-        <span>
-          🚀 {needsSetup ? '开始使用彗记' : '快速开始'}
-          <span style={{ color: '#98A2B3', fontWeight: 400, fontSize: 13, marginLeft: 10 }}>
-            {finishedSteps}/{quickSteps.length} 已完成
-          </span>
-        </span>
-      }
-      extra={
-        allReady ? (
-          <Tag color="success" icon={<CheckCircleFilled />}>
-            基础配置已就绪
-          </Tag>
-        ) : (
-          <Tag color="warning">第一步:先配置对话模型</Tag>
-        )
-      }
-    >
-      {needsSetup && (
-        <p style={{ margin: '0 0 16px', color: '#475467', lineHeight: 1.8 }}>
-          完成下面几步,就能开始和你的 AI 助手对话啦 👇 其中{' '}
-          <b style={{ color: '#155EEF' }}>配置对话模型是必做项</b>,没配好其他功能都用不了。
-        </p>
-      )}
-      <Row gutter={[14, 14]}>
-        {quickSteps.map((step, i) => {
-          const firstTodo = quickSteps.findIndex((s) => !s.done)
-          const isCurrent = !step.done && i === firstTodo
-          return (
-            <Col xs={24} sm={12} lg={6} key={step.title}>
-              <div
-                className={`qs-step${step.done ? ' qs-step--done' : ''}`}
-                style={
-                  isCurrent
-                    ? { borderColor: '#155EEF', boxShadow: '0 0 0 2px rgba(21,94,239,0.12)' }
-                    : undefined
-                }
-              >
-                <div className="qs-step__num">
-                  {step.done ? <CheckCircleFilled /> : i + 1}
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  <div className="qs-step__title">
-                    {step.icon} {step.title}
-                  </div>
-                  <div className="qs-step__desc">{step.desc}</div>
-                  <Button
-                    type={step.done ? 'default' : 'primary'}
-                    size="small"
-                    style={{ marginTop: 10, alignSelf: 'flex-start' }}
-                    onClick={step.action}
-                  >
-                    {step.btn} <ArrowRightOutlined />
-                  </Button>
-                </div>
-              </div>
-            </Col>
-          )
-        })}
-      </Row>
-    </Card>
-  )
+  const knowledgeItems = [
+    {
+      label: '知识库',
+      value: `${overview?.counts.documents ?? 0} 个文档`,
+      icon: <BookOutlined />,
+      tone: 'blue',
+      to: '/knowledge',
+    },
+    {
+      label: '记忆',
+      value: `${memoryTotal} 条`,
+      icon: <HddOutlined />,
+      tone: 'green',
+      to: '/memory',
+    },
+    {
+      label: '关系图谱',
+      value: `${relationTotal} 个关系`,
+      icon: <ShareAltOutlined />,
+      tone: 'orange',
+      to: '/memory',
+    },
+    {
+      label: '知识集',
+      value: `${knowledgeBaseCount} 个集合`,
+      icon: <FolderOpenOutlined />,
+      tone: 'yellow',
+      to: '/knowledge',
+    },
+  ]
 
-  const featuresCard = (
-    <Card
-      title="✨ 功能一览"
-      style={{ marginBottom: 22, borderRadius: 16 }}
-      styles={{ body: { padding: 18 } }}
-    >
-      <Row gutter={[14, 14]}>
-        {features.map((f) => (
-          <Col xs={12} sm={8} md={8} lg={6} xl={6} key={f.label}>
-            <div
-              className="qs-step"
-              style={{ cursor: 'pointer', alignItems: 'center' }}
-              onClick={() => navigate(f.to)}
-            >
-              <div
-                className="stat-card__icon"
-                style={{ background: `${f.color}1a`, color: f.color, marginBottom: 0 }}
-              >
-                {f.icon}
-              </div>
-              <div>
-                <div className="qs-step__title">{f.label}</div>
-                <div className="qs-step__desc" style={{ marginTop: 2 }}>
-                  {f.desc}
-                </div>
-              </div>
-            </div>
-          </Col>
-        ))}
-      </Row>
-    </Card>
-  )
-
-  // 😊 今日心情小药丸 —— 合并到「今日回顾」卡右上角 extra,不单独占行。
-  const moodEmoji = (() => {
-    if (!emotion) return '🙂'
-    if (emotion.avg_valence > 0.3) return '😊'
-    if (emotion.avg_valence > 0) return '🙂'
-    if (emotion.avg_valence > -0.3) return '😐'
-    return '😔'
-  })()
-  const moodColor = (() => {
-    if (!emotion) return '#155EEF'
-    if (emotion.health_index >= 60) return '#369F21'
-    if (emotion.health_index >= 40) return '#FF8A34'
-    return '#FF5D34'
-  })()
-  const moodChip = emotion && emotion.sample_count > 0 && (
-    <Tooltip title={`基于近期 ${emotion.sample_count} 条对话感知 · 点击查看记忆画像`}>
-      <span
-        onClick={() => navigate('/memory')}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 6,
-          padding: '4px 12px',
-          background: `${moodColor}14`,
-          border: `1px solid ${moodColor}33`,
-          borderRadius: 999,
-          cursor: 'pointer',
-          fontSize: 13,
-          color: '#1D2129',
-          transition: 'transform 0.15s',
-          userSelect: 'none',
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.transform = 'translateY(-1px)'
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.transform = 'translateY(0)'
-        }}
-      >
-        <span style={{ fontSize: 16 }}>{moodEmoji}</span>
-        <span style={{ color: '#98A2B3' }}>今日心情</span>
-        <span style={{ fontWeight: 600 }}>{emotion.dominant_emotion || '中性'}</span>
-        <span style={{ color: moodColor, fontWeight: 600 }}>{emotion.health_index}%</span>
-      </span>
-    </Tooltip>
-  )
-
-  const reviewCard = (
-    <Card
-      title="📅 今日回顾"
-      style={{ marginBottom: 22, borderRadius: 16 }}
-      extra={moodChip || undefined}
-    >
-      <p style={{ margin: 0, color: '#475467', lineHeight: 1.8, whiteSpace: 'pre-wrap' }}>
-        {review?.content ?? '加载中…'}
-      </p>
-      {review?.care && (
-        <div className="daily-care">
-          <span className="daily-care-text">💛 {review.care}</span>
-          <Button
-            size="small"
-            type="primary"
-            ghost
-            icon={<CommentOutlined />}
-            onClick={() =>
-              navigate(`/chat?greeting=${encodeURIComponent(review.care ?? '')}`)
-            }
-          >
-            聊聊
-          </Button>
-        </div>
-      )}
-    </Card>
-  )
-
-  // � 今日心情已合并到今日回顾卡 extra(见上),此处保留 AI 洞察分隔
-  const topInsights = useMemo(
-    () =>
-      [...insights]
-        .sort((a, b) => (b.importance ?? 0) - (a.importance ?? 0))
-        .slice(0, 3),
-    [insights],
-  )
-  const insightsCard = topInsights.length > 0 && (
-    <Card
-      title={
-        <span>
-          <BulbOutlined style={{ color: '#FAAD14', marginRight: 6 }} />
-          AI 眼中的你
-          <span style={{ color: '#98A2B3', fontWeight: 400, fontSize: 12, marginLeft: 10 }}>
-            从你的对话与记忆中提炼的洞察
-          </span>
-        </span>
-      }
-      style={{ marginBottom: 22, borderRadius: 16 }}
-      styles={{ body: { padding: 14 } }}
-      extra={
-        <Button type="link" size="small" onClick={() => navigate('/memory')}>
-          全部洞察
-        </Button>
-      }
-    >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {topInsights.map((it) => (
-          <div
-            key={it.id}
-            onClick={() => navigate('/memory')}
-            style={{
-              display: 'flex',
-              alignItems: 'flex-start',
-              gap: 12,
-              padding: '12px 14px',
-              borderRadius: 12,
-              background: 'linear-gradient(135deg, #fff8e6 0%, #ffffff 65%)',
-              border: '1px solid #ffe7a3',
-              cursor: 'pointer',
-              transition: 'box-shadow 0.18s',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.boxShadow = '0 4px 14px rgba(250,173,20,0.12)'
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.boxShadow = 'none'
-            }}
-          >
-            <span style={{ fontSize: 18 }}>💡</span>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div
-                style={{
-                  fontSize: 13,
-                  fontWeight: 600,
-                  color: '#1D2129',
-                  marginBottom: 2,
-                }}
-              >
-                {it.theme}
-              </div>
-              <div
-                style={{
-                  fontSize: 13,
-                  color: '#475467',
-                  lineHeight: 1.65,
-                }}
-              >
-                {it.content}
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </Card>
-  )
-
-  // 🔬 最近一次研究 —— 1 行卡,没完成的研究不显示
-  const recentResearchCard = recentReport && (
-    <Card
-      style={{ marginBottom: 22, borderRadius: 16 }}
-      styles={{ body: { padding: 14 } }}
-    >
-      <div
-        onClick={() => navigate(`/research?report=${recentReport.id}`)}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 14,
-          padding: '6px 4px',
-          cursor: 'pointer',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: 44,
-            height: 44,
-            borderRadius: 12,
-            background: '#f3edff',
-            color: '#7C4DFF',
-            fontSize: 20,
-          }}
-        >
-          🔬
-        </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 12, color: '#98A2B3', marginBottom: 2 }}>
-            最近一次研究
-          </div>
-          <div
-            style={{
-              fontSize: 14,
-              fontWeight: 600,
-              color: '#1D2129',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {recentReport.title || recentReport.topic}
-          </div>
-          {recentReport.created_at && (
-            <div style={{ fontSize: 11, color: '#98A2B3', marginTop: 2 }}>
-              {dayjs(recentReport.created_at).format('MM-DD HH:mm')} · 点击查看报告
-            </div>
-          )}
-        </div>
-        <RightOutlined style={{ color: '#98A2B3', fontSize: 12 }} />
-      </div>
-    </Card>
-  )
-
-  // �💬 快速提问栏已移除(用户反馈不需要,对话页本身就一个输入框,不必重复)
+  const runtimeItems = [
+    {
+      label: 'Agent Runtime',
+      detail: traceLoaded ? '正常运行' : '待连接',
+      healthy: traceLoaded,
+    },
+    {
+      label: 'Checkpoint',
+      detail: '已启用',
+      healthy: true,
+    },
+    {
+      label: 'Tool Runtime',
+      detail: traceLoaded ? '正常' : '待连接',
+      healthy: traceLoaded,
+    },
+    {
+      label: 'Recovery',
+      detail: lastRecovery ? '最近已恢复' : '正常待命',
+      healthy: true,
+    },
+  ]
 
   return (
-    <div className="fluid-page">
-      {welcomeModal}
+    <div className="comet-home fluid-page">
+      <section className="comet-hero">
+        <div className="comet-hero__content">
+          <div className="comet-hero__title">你好，{displayName} 👋</div>
+          <div className="comet-hero__subtitle">今天想让 Comet 帮你做什么？</div>
+          <div className="comet-hero__actions">
+            <Button
+              className="comet-hero__primary"
+              icon={<CommentOutlined />}
+              onClick={() => navigate('/chat')}
+            >
+              开始对话
+            </Button>
+            <Button
+              className="comet-hero__secondary"
+              icon={<ExperimentOutlined />}
+              onClick={() => navigate('/research')}
+            >
+              深度研究
+            </Button>
+          </div>
+        </div>
+        <img className="comet-hero__art" src={heroIllustration} alt="Comet AI" />
+      </section>
 
-      {/* 欢迎横幅 */}
-      <div className="dash-hero">
-        <h2 className="dash-hero__title">
-          你好,{user?.nickname || user?.username || '朋友'} 👋
-        </h2>
-        <p className="dash-hero__sub">
-          {needsSetup
-            ? '只差一步就能开始:先配置一个对话大模型,下面有详细引导。'
-            : '欢迎使用彗记 Comet —— 你的个人 AI 知识库与记忆助手。'}
-        </p>
+      {needsSetup && (
+        <section className="comet-setup-strip">
+          <div>
+            <strong>先完成基础配置</strong>
+            <span>
+              {!hasChatModel ? '还缺对话模型' : ''}
+              {!hasChatModel && !hasEmbeddingModel ? ' · ' : ''}
+              {!hasEmbeddingModel ? '还缺向量模型' : ''}
+            </span>
+          </div>
+          <Button type="primary" size="small" onClick={() => navigate('/settings/models')}>
+            去配置 <ArrowRightOutlined />
+          </Button>
+        </section>
+      )}
+
+      <div className="comet-home__top-grid">
+        <section className="comet-card comet-recent-card">
+          <div className="comet-card__header">
+            <span>最近使用</span>
+          </div>
+          <div className="comet-recent-tabs">
+            <button
+              type="button"
+              className={recentTab === 'chat' ? 'is-active' : ''}
+              onClick={() => setRecentTab('chat')}
+            >
+              最近对话
+            </button>
+            <button
+              type="button"
+              className={recentTab === 'research' ? 'is-active' : ''}
+              onClick={() => setRecentTab('research')}
+            >
+              最近研究
+            </button>
+          </div>
+
+          <div className="comet-recent-list">
+            {recentTab === 'chat' && recentConversations.length === 0 && (
+              <div className="comet-empty">还没有对话，去和 Comet 聊聊吧。</div>
+            )}
+            {recentTab === 'research' && recentReports.length === 0 && (
+              <div className="comet-empty">还没有研究任务，试试发起一次深度研究。</div>
+            )}
+
+            {recentTab === 'chat' &&
+              recentConversations.map((conversation, index) => (
+                <button
+                  type="button"
+                  className={`comet-recent-item${index === 0 ? ' is-latest' : ''}`}
+                  key={conversation.id}
+                  onClick={() => navigate(`/chat?conversation=${conversation.id}`)}
+                >
+                  <span className="comet-recent-item__icon">
+                    <CommentOutlined />
+                  </span>
+                  <span className="comet-recent-item__body">
+                    <strong>{conversation.title || '未命名对话'}</strong>
+                    <small>点击继续上次对话</small>
+                  </span>
+                  <span className="comet-recent-item__time">
+                    {formatRelative(conversation.updated_at || conversation.created_at)}
+                  </span>
+                </button>
+              ))}
+
+            {recentTab === 'research' &&
+              recentReports.map((report, index) => (
+                <button
+                  type="button"
+                  className={`comet-recent-item${index === 0 ? ' is-latest' : ''}`}
+                  key={report.id}
+                  onClick={() => navigate('/research')}
+                >
+                  <span className="comet-recent-item__icon comet-recent-item__icon--research">
+                    <ExperimentOutlined />
+                  </span>
+                  <span className="comet-recent-item__body">
+                    <strong>{report.title || report.topic || '深度研究'}</strong>
+                    <small>{researchStatusText(report.status)}</small>
+                  </span>
+                  <span className="comet-recent-item__time">{formatRelative(report.created_at)}</span>
+                </button>
+              ))}
+          </div>
+
+          <button
+            type="button"
+            className="comet-text-link comet-recent-card__more"
+            onClick={() => navigate(recentTab === 'chat' ? '/chat' : '/research')}
+          >
+            {recentTab === 'chat' ? '查看全部对话' : '查看全部研究'} <ArrowRightOutlined />
+          </button>
+        </section>
+
+        <div className="comet-home__right-stack">
+          <section className="comet-card comet-review-card">
+            <div className="comet-card__header">
+              <span>
+                <BulbOutlined /> 今日回顾
+              </span>
+            </div>
+            <div className="comet-review-card__body">
+              <div className="comet-review-card__copy">
+                <strong>
+                  {review?.content ||
+                    (review?.generating ? '正在整理今天的回顾…' : '今天也在稳稳推进自己的事情。')}
+                </strong>
+                <p>{review?.care || '保持自己的节奏，明天继续把重要的事情做好。'}</p>
+              </div>
+              <div className="comet-review-card__cup" aria-hidden="true">
+                ☕
+              </div>
+              <button
+                type="button"
+                className="comet-text-link comet-review-card__link"
+                onClick={() =>
+                  navigate(
+                    review?.care
+                      ? `/chat?greeting=${encodeURIComponent(review.care)}`
+                      : '/chat',
+                  )
+                }
+              >
+                查看详情 <ArrowRightOutlined />
+              </button>
+            </div>
+          </section>
+
+          <section className="comet-card comet-task-card">
+            <div className="comet-card__header comet-card__header--with-link">
+              <span>
+                <ClockCircleOutlined /> 自动任务
+              </span>
+              <button
+                type="button"
+                className="comet-text-link"
+                onClick={() => navigate('/agent-tasks')}
+              >
+                查看全部 <ArrowRightOutlined />
+              </button>
+            </div>
+            <div className="comet-task-list">
+              {visibleTasks.length === 0 ? (
+                <button
+                  type="button"
+                  className="comet-empty comet-empty--button"
+                  onClick={() => navigate('/agent-tasks')}
+                >
+                  还没有启用的自动任务，去创建一个。
+                </button>
+              ) : (
+                visibleTasks.map((task, index) => (
+                  <button
+                    type="button"
+                    className="comet-task-item"
+                    key={task.id}
+                    onClick={() => navigate('/agent-tasks')}
+                  >
+                    <span
+                      className={`comet-task-item__icon ${index % 2 ? 'is-purple' : 'is-green'}`}
+                    >
+                      {index % 2 ? <ExperimentOutlined /> : <ClockCircleOutlined />}
+                    </span>
+                    <span className="comet-task-item__body">
+                      <strong>{task.name}</strong>
+                      <small>{taskScheduleText(task)}</small>
+                    </span>
+                    <span className={`comet-task-item__next ${index % 2 ? 'is-orange' : ''}`}>
+                      {task.next_run_at
+                        ? `下次执行 ${dayjs(task.next_run_at).format('HH:mm')}`
+                        : '等待调度'}
+                    </span>
+                    <MoreOutlined className="comet-task-item__more" />
+                  </button>
+                ))
+              )}
+            </div>
+          </section>
+        </div>
       </div>
 
-      {needsSetup ? (
-        // 新用户态:聚焦引导
-        <>
-          {quickStartCard}
-          {featuresCard}
-        </>
-      ) : (
-        // 常用态:心情条 + 今日回顾 + AI 洞察 + 最近研究 + (可选)未完成引导 + 功能一览
-        // 每个有条件卡片在没数据时自动不渲染,新用户不会看到空卡
-        <>
-          {reviewCard}
-          {insightsCard}
-          {recentResearchCard}
-          {finishedSteps < quickSteps.length && quickStartCard}
-          {featuresCard}
-        </>
-      )}
+      <div className="comet-home__bottom-grid">
+        <section className="comet-card comet-knowledge-card">
+          <div className="comet-card__header">
+            <span>你的知识</span>
+          </div>
+          <div className="comet-knowledge-grid">
+            {knowledgeItems.map((item) => (
+              <button
+                type="button"
+                key={item.label}
+                className={`comet-knowledge-item is-${item.tone}`}
+                onClick={() => navigate(item.to)}
+              >
+                <span className="comet-knowledge-item__icon">{item.icon}</span>
+                <span>
+                  <strong>{item.label}</strong>
+                  <small>{item.value}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+          <div className="comet-knowledge-footer">
+            <span>
+              最近更新： <strong>{newestContent?.title || '暂无最近更新'}</strong>
+              {newestContent?.time && <small>{formatRelative(newestContent.time)}</small>}
+            </span>
+            <button type="button" className="comet-text-link" onClick={() => navigate('/knowledge')}>
+              进入知识库 <ArrowRightOutlined />
+            </button>
+          </div>
+        </section>
+
+        <section className="comet-card comet-runtime-card">
+          <div className="comet-card__header">
+            <span>
+              <ThunderboltOutlined /> 运行状态
+            </span>
+          </div>
+          <div className="comet-runtime-grid">
+            {runtimeItems.map((item) => (
+              <div className="comet-runtime-item" key={item.label}>
+                <CheckCircleFilled className={item.healthy ? 'is-healthy' : 'is-muted'} />
+                <span>
+                  <strong>{item.label}</strong>
+                  <small>{item.detail}</small>
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="comet-runtime-footer">
+            <span>
+              最近恢复：{' '}
+              {lastRecovery ? (
+                <>
+                  {formatRelative(lastRecovery.finished_at || lastRecovery.started_at)} ·{' '}
+                  <strong className={lastRecovery.status === 'ok' ? 'is-success' : 'is-error'}>
+                    {lastRecovery.status === 'ok'
+                      ? '成功'
+                      : lastRecovery.status === 'running'
+                        ? '进行中'
+                        : '失败'}
+                  </strong>
+                </>
+              ) : (
+                '暂无恢复记录'
+              )}
+            </span>
+            <button type="button" className="comet-text-link" onClick={() => navigate('/traces')}>
+              查看执行轨迹 <ArrowRightOutlined />
+            </button>
+          </div>
+        </section>
+      </div>
+
+      <footer className="comet-home__footer">Powered by Comet Harness</footer>
+
+      <Modal
+        open={welcomeOpen}
+        onCancel={closeWelcome}
+        centered
+        width={460}
+        footer={null}
+        title={null}
+      >
+        <div className="comet-welcome-modal">
+          <div className="comet-welcome-modal__icon">
+            <SettingOutlined />
+          </div>
+          <h2>欢迎使用 Comet</h2>
+          <p>配置好对话模型和向量模型后，就可以使用对话、知识库、记忆和研究能力。</p>
+          <div className="comet-welcome-modal__actions">
+            <Button
+              type="primary"
+              onClick={() => {
+                closeWelcome()
+                navigate('/settings/models')
+              }}
+            >
+              去配置模型
+            </Button>
+            <Button onClick={closeWelcome}>稍后再说</Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }
