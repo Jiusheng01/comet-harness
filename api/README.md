@@ -34,7 +34,6 @@ api/
 │   │   ├── tag_controller.py           # 标签 列表/改名改色/合并/删除
 │   │   ├── memory_controller.py        # 主动记住/画像/检索/社区/图谱/时间线/记忆巩固
 │   │   ├── chat_controller.py          # 会话 CRUD + SSE 流式问答 + 传图 + 消息反馈/重新生成 + 语音转写
-│   │   ├── group_chat_controller.py    # 群聊：建群 + 成员 + 多 Agent SSE 流式（v0.0.3）
 │   │   ├── conversation_share_controller.py # 对话分享：建/列/取消 + 无鉴权公开页（v0.0.3）
 │   │   ├── agent_config_controller.py  # Agent 提示词/温度/工具开关/主动召回/跨会话
 │   │   ├── agent_persona_controller.py # 对话人格（角色卡）CRUD + 切换生效（v0.0.3）
@@ -140,10 +139,10 @@ Comet 不在 `.env` 里写任何 LLM 的 API Key。**所有模型与其 API Key 
 |------|------|----------|
 | `chat` | 对话/问答、记忆萃取、社区命名、每日回顾、AI 打标签 | **必须**（问答与记忆萃取依赖） |
 | `embedding` | 文本/实体向量化，知识库与记忆检索的向量召回 | **必须**（不配则无法检索） |
-| `multimodal` | 多模态看图：图片描述/OCR、对话传图问答、群聊看图 | 用到图片功能时需要 |
+| `multimodal` | 多模态看图：图片描述/OCR、对话传图问答 | 用到图片功能时需要 |
 | `rerank` | 检索结果重排序，提升相关度 | 可选 |
 | `websearch` | 联网搜索工具（对话联网开关） | 可选 |
-| `asr` | 语音识别：对话/群聊语音输入转文字（DashScope Paraformer / OpenAI Whisper）（v0.0.3） | 可选（不配走浏览器免费识别） |
+| `asr` | 语音识别：对话语音输入转文字（DashScope Paraformer / OpenAI Whisper）（v0.0.3） | 可选（不配走浏览器免费识别） |
 
 ### Provider（供应商）
 
@@ -254,7 +253,6 @@ uv run alembic upgrade head                          # 应用
 - `agent_personas`（对话人格/角色卡）；`agent_configs` 加 `show_avatar` / `enable_active_recall` / `enable_cross_session`。
 - `skills`（技能）+ `enabled` 列。
 - `conversation_shares`（对话分享，含头像/快照 data URL 列）。
-- `conversations` 加 `is_group` / `member_persona_ids` / `enable_tools`，`messages` 加 `sender_persona_id`（群聊）。
 - `daily_reviews` 加 `care`（AI 主动关心）。
 - ASR 语音识别复用 `model_configs`，`type` 新增 `asr` 取值（String 列，**无迁移**）。
 - 反思引擎的 `Insight` 节点在 **Neo4j**（非 PG），由启动时图 schema 幂等创建,无 Alembic 迁移。

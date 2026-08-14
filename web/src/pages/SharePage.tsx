@@ -62,15 +62,9 @@ export default function SharePage() {
         <div className="share-body">
           {data.messages.map((m, i) => {
             const isUser = m.role === 'user'
-            // 右侧「我」：单聊 user（无名） 或 群聊里分享者本人的发言；其他真人靠左具名
-            const onRight = isUser && (!m.sender_name || !!m.is_me)
-            const leftName = m.sender_name || data.ai_name
-            // 左侧头像：真人用真人头像；AI 角色群聊用自己头像、单聊回退全局 ai_avatar
-            const leftAvatar = isUser
-              ? m.sender_avatar
-              : m.sender_name
-                ? m.sender_avatar
-                : m.sender_avatar || data.ai_avatar
+            const onRight = isUser
+            const leftName = data.ai_name
+            const leftAvatar = data.ai_avatar
             return (
               <div
                 key={i}

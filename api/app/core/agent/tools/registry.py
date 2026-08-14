@@ -71,7 +71,7 @@ async def build_enabled_tools(
 ) -> list[BaseTool]:
     """构建用户当前启用的工具列表（内置 + MCP，MCP 为无状态版本，每次调用新建连接）。
 
-    保留给不便用上下文管理器的场景；问答/群聊生成请用 build_enabled_tools_cm（持久会话，省握手）。
+    保留给不便用上下文管理器的场景；问答/研究生成请用 build_enabled_tools_cm（持久会话，省握手）。
 
     overrides: {tool_key: bool} 本轮临时开关（对话请求传入），优先级最高。
     citations: 引用收集器，传给知识库工具。

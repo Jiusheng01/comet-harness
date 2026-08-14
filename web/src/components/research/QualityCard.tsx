@@ -9,7 +9,7 @@
  * - 模型审计(generator / verifier 模型名 + verifier kind)
  */
 import { Card, Collapse, Empty, Space, Tag, Tooltip, Typography } from 'antd'
-import ReactECharts from 'echarts-for-react'
+import ReactECharts from '@/components/ECharts'
 import { CheckCircleFilled, CloseCircleFilled, ExclamationCircleFilled } from '@ant-design/icons'
 
 import type { LoopDetail, LoopIterationDetail } from '@/api/research'

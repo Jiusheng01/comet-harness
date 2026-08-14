@@ -29,7 +29,7 @@ import {
   EditOutlined,
   ReloadOutlined,
 } from '@ant-design/icons'
-import ReactECharts from 'echarts-for-react'
+import ReactECharts from '@/components/ECharts'
 
 import {
   memoryApi,

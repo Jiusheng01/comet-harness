@@ -89,19 +89,10 @@ class ConversationShareService:
             logger.warning("头像压缩失败，用原图: %s", e)
             return raw, "image/png"
 
-    async def _build_snapshot(
-        self, conv_id: uuid.UUID, sharer_id: uuid.UUID
-    ) -> list[dict]:
-        """把会话消息脱敏冻结成快照：保留 user/assistant 的文本。
-
-        群聊消息额外带发言人名字 sender_name + 发言人头像 data URL sender_avatar，
-        供公开页按发言人区分展示（微信群效果）。多人群聊里**分享者本人**的发言标记
-        is_me=True，公开页让其靠右显示「我」，其他真人靠左具名显示。
-        """
+    async def _build_snapshot(self, conv_id: uuid.UUID) -> list[dict]:
+        """把会话消息脱敏冻结成快照：保留 user/assistant 的文本与图片。"""
         msgs = await self.msg_repo.list_by_conversation(conv_id)
         snapshot: list[dict] = []
-        avatar_cache: dict[str, str | None] = {}  # persona_id -> data URL
-        user_avatar_cache: dict[str, str | None] = {}  # user_id -> data URL
         for m in msgs:
             if m.role not in (ROLE_USER, ROLE_ASSISTANT):
                 continue
@@ -113,31 +104,6 @@ class ConversationShareService:
             item: dict = {"role": m.role, "content": content}
             if images:
                 item["images"] = images
-            # 群聊发言人信息（单聊消息无 sender_persona_id，不受影响）
-            if m.role == ROLE_ASSISTANT and m.sender_persona_id:
-                sender_name = (m.meta_data or {}).get("sender_name") if m.meta_data else None
-                item["sender_name"] = sender_name
-                key = str(m.sender_persona_id)
-                if key not in avatar_cache:
-                    avatar_cache[key] = await self._persona_avatar_data_url(
-                        m.sender_persona_id
-                    )
-                item["sender_avatar"] = avatar_cache[key]
-            # 多人实时群聊：真人发言带发送者昵称 + 真人头像，公开页按真人区分展示
-            elif m.role == ROLE_USER and m.sender_user_id:
-                sender_name = (m.meta_data or {}).get("sender_name") if m.meta_data else None
-                if sender_name:
-                    item["sender_name"] = sender_name
-                    item["is_human"] = True
-                    # 分享者本人的发言：公开页靠右显示「我」
-                    if m.sender_user_id == sharer_id:
-                        item["is_me"] = True
-                    ukey = str(m.sender_user_id)
-                    if ukey not in user_avatar_cache:
-                        user_avatar_cache[ukey] = await self._user_avatar_data_url(
-                            m.sender_user_id
-                        )
-                    item["sender_avatar"] = user_avatar_cache[ukey]
             snapshot.append(item)
         return snapshot
 
@@ -194,30 +160,6 @@ class ConversationShareService:
             logger.warning("分享图片压缩失败（跳过）: key=%s err=%s", file_key, e)
             return None
 
-    async def _persona_avatar_data_url(self, persona_id: uuid.UUID) -> str | None:
-        """按角色卡 id 取头像 data URL（群聊快照用）。失败返回 None。"""
-        try:
-            from app.models.agent_persona_model import AgentPersona
-
-            persona = await self.session.get(AgentPersona, persona_id)
-            if persona and persona.avatar_key:
-                return await self._avatar_data_url(persona.avatar_key)
-        except Exception as e:
-            logger.warning("群成员头像 data URL 失败（忽略）: %s", e)
-        return None
-
-    async def _user_avatar_data_url(self, user_id: uuid.UUID) -> str | None:
-        """按真人用户 id 取头像 data URL（多人群聊快照用）。失败返回 None。"""
-        try:
-            from app.models.user_model import User
-
-            u = await self.session.get(User, user_id)
-            if u and getattr(u, "avatar", None):
-                return await self._avatar_data_url(u.avatar)
-        except Exception as e:
-            logger.warning("真人成员头像 data URL 失败（忽略）: %s", e)
-        return None
-
     async def create_share(
         self,
         user_id: uuid.UUID,
@@ -229,7 +171,7 @@ class ConversationShareService:
         conv = await self.conv_repo.get(user_id, conversation_id)
         if not conv:
             raise BizError("会话不存在", code=4070, status_code=404)
-        snapshot = await self._build_snapshot(conversation_id, user_id)
+        snapshot = await self._build_snapshot(conversation_id)
         if not snapshot:
             raise BizError("会话还没有内容，无法分享", code=4071)
         # 分享标题：用户自定义优先，否则用会话标题

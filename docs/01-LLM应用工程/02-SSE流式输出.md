@@ -1,14 +1,14 @@
 # SSE 流式输出（含断线续传）— 设计与面试
 
 > LLM 回答逐 token 推到前端实现「打字机」效果；长回答不阻塞；断线能重连续传。
-> 对应能力域：**LLM 应用工程 / 流式交互**。代码：`controllers/chat_controller.py`（StreamingResponse）+ `services/chat_service.py`（async generator + 续传）+ `core/realtime/bus.py`（Redis 缓冲/广播）。
+> 对应能力域：**LLM 应用工程 / 流式交互**。代码：`controllers/chat_controller.py`（StreamingResponse）+ `services/chat_service.py`（async generator + 续传）+ `core/realtime/bus.py`（Redis 缓冲/事件通道）。
 
 ---
 
 ## 0. 能力定位（对应招聘要求）
 
 - 对应 JD：**「流式输出 / SSE」「大模型应用的实时交互」「高并发 I/O / 异步编程」**。
-- 角色：所有 LLM 生成场景（单聊、群聊、重新生成、深度研究）的输出通道，决定了产品「秒回 + 打字机」的体感。
+- 角色：所有 LLM 生成场景（对话、重新生成、深度研究）的输出通道，决定了产品「秒回 + 打字机」的体感。
 
 ---
 
@@ -80,10 +80,6 @@ LLM 客户端（LangChain `model.astream` 或裸 httpx 流式）本身是异步�
 
 > 面试一句话：把「生成中的累积内容」实时写进 Redis（带 TTL），断线重连时先补推缓冲里已生成的部分再续接后续 token，没有进行中的就回 idle 让前端拉历史——既不丢正在生成的回答，也不重复。
 
-### 3.5 群聊场景的 Redis Pub/Sub 广播（`bus.py`）
-
-单聊是「一个请求一条流」，群聊是「多人同看一条流」。群聊用 Redis **发布订阅**：任意成员发言或 AI 逐字回答都 `publish` 到该会话频道，每个在场成员开一条 SSE 长连接 `subscribe` 同一频道，实现「谁发消息全员秒级可见」，且跨进程/多 worker 天然广播。空闲时周期吐 `_ping` 心跳（25s）保活，防反向代理空闲超时断连。还有「AI 回合锁」（SET NX EX）防多人同时发言重复触发 AI 调度。
-
 ---
 
 ## 4. 关键设计取舍
@@ -93,7 +89,6 @@ LLM 客户端（LangChain `model.astream` 或裸 httpx 流式）本身是异步�
 | 流式协议 | SSE | WebSocket | LLM 输出是「服务端→客户端」单向流，SSE 够用、基于 HTTP 更简单、自动重连；WebSocket 双向是杀鸡用牛刀 |
 | Nginx 缓冲 | `X-Accel-Buffering: no` | 默认缓冲 | 不禁用就不是真流式，前端会憋一下一次性出 |
 | 续传缓冲 | Redis（TTL 600s） | 内存 / DB | 跨 worker 可见、自动过期清理、不污染 DB |
-| 群聊广播 | Redis Pub/Sub | 轮询 / 内存广播 | 复用现有 Redis，多 worker 跨进程广播，秒级 |
 | token 写缓冲频率 | 攒 8 个 flush 一次 | 每 token 写 | 每 token 写 Redis 太频繁，批量降写压 |
 
 ---
@@ -121,10 +116,7 @@ LLM 客户端是异步生成器逐 token 产出，service 包一层加事件类�
 **Q4（进阶）：断线重连怎么不丢正在生成的回答？**
 生成中把累积内容实时写 Redis 缓冲（带 TTL，攒批刷降写频）；重连走 /events 接口读缓冲，先补推已生成部分再续接后续 token；没有进行中的就回 idle 让前端拉历史。既不丢也不重复。
 
-**Q5（进阶）：群聊一条流多人看怎么做？**
-Redis Pub/Sub：发言/AI 回答 publish 到会话频道，每个在场成员 SSE 订阅同频道，跨进程广播。空闲发心跳保活，AI 回合用 SET NX 锁防重复触发。
-
-**Q6（细节）：事件为什么要分类型（token/tool_call/citation/done）？**
+**Q5（细节）：事件为什么要分类型（token/tool_call/citation/done）？**
 前端要把文本、工具调用提示、引用卡、结束信号渲染到不同 UI 区域。分类型事件让前端能边收边分发，而不是只收一坨文本再解析。
 
 ---
@@ -145,12 +137,12 @@ LLM 自回归逐 token 生成，天然可以「边生成边返回」。流式不
 Nginx 等反向代理默认缓冲上游响应（攒一批再发给客户端），这会**破坏流式**——前端憋很久再一次性收到全部。`X-Accel-Buffering: no`（Nginx 专用响应头）/ `proxy_buffering off` 关闭缓冲，是 SSE 部署的必备知识点。
 
 **④ Redis Pub/Sub 与发布订阅模式**
-发布订阅是经典消息模式：发布者发到频道，所有订阅者收到。本项目群聊用它做「一条流多人看」的跨连接广播；跨进程/多 worker 天然可达。
+发布订阅是经典消息模式：发布者发到频道，所有订阅者收到。本项目实时事件通道用它做跨连接广播；跨进程/多 worker 天然可达。
 
 **⑤ 断点续传 / 背压（Backpressure）思想**
 本项目「生成中写 Redis 缓冲、重连补推」是断点续传思路；「攒够 N 个 token 才刷一次缓冲」是轻量背压/流控——降低下游（Redis）写压。
 
-> 一句话脉络：服务端推送从轮询→WebSocket→SSE，LLM 单向流用 SSE 最合适；部署要关反向代理缓冲才是真流式；群聊广播用 Redis Pub/Sub；断线续传靠 Redis 缓冲补推。
+> 一句话脉络：服务端推送从轮询→WebSocket→SSE，LLM 单向流用 SSE 最合适；部署要关反向代理缓冲才是真流式；实时事件通道用 Redis Pub/Sub；断线续传靠 Redis 缓冲补推。
 
 ---
 
@@ -159,4 +151,4 @@ Nginx 等反向代理默认缓冲上游响应（攒一批再发给客户端）�
 - **token 节流/合并**：前端按帧合并 token 渲染，降重绘。
 - **断点续传更细**：续传带「已发送 token 序号」精确续接，而非整体补推。
 - **生成可取消**：前端断开时后端检测并取消 LLM 请求，省额度（当前后台仍跑完落库）。
-- **统一抽象**：单聊续传缓冲与群聊 Pub/Sub 两套机制可抽象成统一的「会话事件流」层。
+- **统一抽象**：续传缓冲与实时事件通道可进一步收敛成统一的「会话事件流」层。

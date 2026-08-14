@@ -7,11 +7,11 @@
 
 ## 1. 一句话介绍
 
-Comet 是一个多用户的**个人 AI 知识库与记忆助手**：把用户的文档/图片/网页沉淀为可语义检索的知识库，从对话中自动萃取「记忆」构建专属知识图谱，并用 **LLM Agent 自主编排「知识库 / 记忆 / 联网 + 可外接的 MCP 工具」** 来回答问题；进一步支持**深度研究报告、定时主动任务、多 Agent 群聊、情绪化个性化**。前后端分离，已部署上线（HTTPS）。
+Comet 是一个多用户的**个人 AI 知识库与记忆助手**：把用户的文档/图片/网页沉淀为可语义检索的知识库，从对话中自动萃取「记忆」构建专属知识图谱，并用 **LLM Agent 自主编排「知识库 / 记忆 / 联网 + 可外接的 MCP 工具」** 来回答问题；进一步支持**深度研究报告、定时主动任务、Agent Harness / Runtime、情绪化个性化**。前后端分离，已部署上线（HTTPS）。
 
 **30 秒面试开场版**：
 
-> 我独立做了一个个人 AI 知识库 + 记忆助手 Comet。核心是三层能力：一是 **RAG 知识库**，文档/图片/网页入库、中文混合检索带引用；二是**记忆系统**，从对话自动萃取三元组写进 Neo4j 知识图谱，做成用户画像 + 经历时间线；三是 **Agent 智能问答**，把知识库/记忆/联网/MCP 做成工具让大模型自主编排，强模型走 function calling、弱模型走 ReAct 降级，全程 SSE 流式。在这之上还做了对标 GPT Researcher 的**深度研究 Agent**、可定时自动跑的**主动任务**、**多 Agent 群聊**。技术栈是 FastAPI + React，用了 PostgreSQL / Elasticsearch / Neo4j / Redis 四种存储 + Celery 异步。
+> 我独立做了一个个人 AI 知识库 + 记忆助手 Comet。核心是三层能力：一是 **RAG 知识库**，文档/图片/网页入库、中文混合检索带引用；二是**记忆系统**，从对话自动萃取三元组写进 Neo4j 知识图谱，做成用户画像 + 经历时间线；三是 **Agent 智能问答**，把知识库/记忆/联网/MCP 做成工具让大模型自主编排，强模型走 function calling、弱模型走 ReAct 降级，全程 SSE 流式。在这之上还做了对标 GPT Researcher 的**深度研究 Agent**、可定时自动跑的**主动任务**、**Agent Harness / Runtime**。技术栈是 FastAPI + React，用了 PostgreSQL / Elasticsearch / Neo4j / Redis 四种存储 + Celery 异步。
 
 ---
 
@@ -42,7 +42,7 @@ Comet 是一个多用户的**个人 AI 知识库与记忆助手**：把用户的
 ```mermaid
 flowchart TB
   subgraph FE[前端 React]
-    UI[知识库 / 对话 / 记忆 / 研究 / 群聊 / 仪表盘]
+    UI[知识库 / 对话 / 记忆 / 研究 / 仪表盘]
   end
   subgraph BE[后端 FastAPI · 分层]
     CTRL[controllers 路由层]
@@ -80,7 +80,7 @@ flowchart TB
 | RAG 知识库 | `02-RAG知识库/` | 分块与 IK 中文分词、向量+BM25 混合检索+rerank、引用溯源、多知识库、多模态、文档预览、全局搜索语义门控 |
 | Agent 核心 | `03-Agent核心/` | FunctionCalling/ReAct 双路径、工具注册中心、MCP 接入、角色卡/提示词优化器、Skills 技能 |
 | 记忆 | `04-记忆/` | 三元组萃取+四层溯源图谱+事件、实体去重、图混合检索、社区聚类 LPA、记忆分层巩固、反思 Insight、主动召回、跨会话 |
-| 多 Agent 编排 | `05-多Agent编排/` | 深度研究引擎（规划-检索-提炼-写作）、定时主动任务调度、多 Agent 群聊（主持人调度） |
+| Agent Runtime / 复杂任务 | `05-多Agent编排/` | 深度研究引擎（规划-检索-提炼-写作）、定时主动任务调度、Agent Harness / Runtime（Checkpoint / Crash Recovery） |
 | 工程化与部署 | `06-工程化与部署/` | 账号鉴权/安全、Celery 多队列、分享导出、消息推送、部署 HTTPS、踩坑集 |
 | 情绪与个性化 | `07-情绪与个性化/` | valence-arousal 情绪计算、情绪感知与个性化、真人对话模式、AI 主动关心/每日回顾 |
 
@@ -107,7 +107,7 @@ flowchart TB
 
 - **Situation**：想做一个能长期记住自己、能基于个人资料和实时信息回答问题的 AI 助手，市面框架（Dify 等）封装重、定制难、记忆是黑盒。
 - **Task**：独立设计并实现一个多用户、可私有部署的 AI 知识库 + 记忆助手，覆盖 RAG、知识图谱记忆、Agent 编排全链路。
-- **Action**：①四存储选型 + 分层架构 + Celery 异步解耦；②自研 RAG 全链路（父子分块 + IK + 向量/BM25 混合 + rerank + 引用）；③自研记忆萃取流水线（受控词表三元组 + 两层去重 + 四层溯源图）；④Agent 双路径编排（function calling / ReAct）+ MCP 接入 + SSE 流式；⑤进阶做深度研究 Agent、定时任务、多 Agent 群聊。
+- **Action**：①四存储选型 + 分层架构 + Celery 异步解耦；②自研 RAG 全链路（父子分块 + IK + 向量/BM25 混合 + rerank + 引用）；③自研记忆萃取流水线（受控词表三元组 + 两层去重 + 四层溯源图）；④Agent 双路径编排（function calling / ReAct）+ MCP 接入 + SSE 流式；⑤进阶做深度研究 Agent、定时任务、Agent Harness / Runtime。
 - **Result**：完整跑通并部署上线（HTTPS）；端到端覆盖入库→检索→萃取→问答→记忆闭环；沉淀了一套可讲清原理与取舍的工程实现。
 
 ---

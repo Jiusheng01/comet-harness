@@ -6,7 +6,7 @@ import asyncio
 import uuid
 from datetime import date, datetime, time
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dashboard.prompt_renderer import render_prompt
@@ -37,10 +37,7 @@ class DailyReviewService:
         """收集当日新增的对话提问 / 主动记住 / 文档。"""
         start, end = await self._day_range(day)
 
-        # 用户提问消息：
-        # - 单聊：本人会话里的 user 提问（单聊 user 消息不带 sender_user_id）；
-        # - 群聊：只取「本人发言」（sender_user_id == 当前用户），把邀请进来的其他真人
-        #   成员的发言排除掉，避免别人说的话算进自己的个人回顾（数据隔离）。
+        # 用户当天在自己会话中的提问消息。
         msg_rows = await self.session.execute(
             select(Message.content)
             .join(Conversation, Conversation.id == Message.conversation_id)
@@ -48,13 +45,7 @@ class DailyReviewService:
                 Message.role == ROLE_USER,
                 Message.created_at >= start,
                 Message.created_at <= end,
-                or_(
-                    and_(
-                        Conversation.user_id == user_id,
-                        Conversation.is_group.isnot(True),
-                    ),
-                    Message.sender_user_id == user_id,
-                ),
+                Conversation.user_id == user_id,
             )
             .limit(30)
         )

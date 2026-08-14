@@ -38,6 +38,7 @@ import {
   type ToolRunStatus,
 } from '@/api/chat'
 import { favoriteApi } from '@/api/favorites'
+import { toolsApi } from '@/api/tools'
 
 /** 过滤 noop/无效 trace（全 0 UUID 来自 tracing 关闭或采样跳过） */
 function validTraceId(id?: string | null): string | undefined {
@@ -217,10 +218,7 @@ export default function ChatPage() {
   const loadConversations = async () => {
     try {
       const { data } = await chatApi.listConversations()
-      // 单聊列表排除群聊会话（is_group），群聊在「群聊」页单独管理
-      setConversations(
-        (data as (Conversation & { is_group?: boolean })[]).filter((c) => !c.is_group),
-      )
+      setConversations(data)
     } catch (e) {
       antdMessage.error((e as Error).message)
     }
@@ -269,17 +267,15 @@ export default function ChatPage() {
 
   // 读取联网搜索工具的默认启停（来自「工具配置」），作为对话联网开关默认值
   useEffect(() => {
-    import('@/api/tools').then(({ toolsApi }) => {
-      toolsApi
-        .list()
-        .then(({ data }) => {
-          const web = data.find((t) => t.tool_key === 'web_search')
-          if (web) setWebSearch(web.enabled)
-        })
-        .catch(() => {
-          // 取配置失败则保持默认关闭，不影响对话
-        })
-    })
+    toolsApi
+      .list()
+      .then(({ data }) => {
+        const web = data.find((t) => t.tool_key === 'web_search')
+        if (web) setWebSearch(web.enabled)
+      })
+      .catch(() => {
+        // 取配置失败则保持默认关闭，不影响对话
+      })
   }, [])
 
   // 收藏深链：?conversation=&message= 打开会话并定位消息
