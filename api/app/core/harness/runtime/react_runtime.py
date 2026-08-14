@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import re
+import uuid
+
 from collections.abc import AsyncGenerator
 from typing import Any
 
 from app.core.agent.tracing import get_tracer
 from app.core.harness.context import ContextManager
+from app.core.harness.checkpoint import (
+    CheckpointStore,
+    HarnessCheckpoint,
+)
 from app.core.harness.runtime.contracts import (
     ExecutionContext,
     HarnessMessage,
@@ -37,18 +43,26 @@ class ReactRuntime:
         model: ModelAdapter,
         tool_executor: ToolExecutor,
         context_manager: ContextManager,
+        checkpoint_store: CheckpointStore | None = None,
     ) -> None:
         self._model = model
         self._tool_executor = tool_executor
         self._context_manager = context_manager
+        self._checkpoint_store = checkpoint_store
 
     async def run(
         self,
         ctx: ExecutionContext,
+        *,
+        checkpoint_id: uuid.UUID | None = None,
+        start_iteration: int = 0,
     ) -> AsyncGenerator[dict[str, Any], None]:
         tracer = get_tracer()
 
-        for iteration in range(ctx.max_iterations):
+        for iteration in range(
+            start_iteration,
+            ctx.max_iterations,
+        ):
             prepared = self._context_manager.prepare(ctx.messages)
             turn: ModelTurn | None = None
             response_text = ""
@@ -137,6 +151,14 @@ class ReactRuntime:
             if final_match:
                 answer = final_match.group(1).strip()
 
+                if (
+                    checkpoint_id is not None
+                    and self._checkpoint_store is not None
+                ):
+                    await self._checkpoint_store.delete(
+                        checkpoint_id
+                    )
+
                 yield {
                     "type": "token",
                     "text": answer,
@@ -152,6 +174,14 @@ class ReactRuntime:
             input_match = _ACTION_INPUT_RE.search(text)
 
             if not action_match:
+                if (
+                    checkpoint_id is not None
+                    and self._checkpoint_store is not None
+                ):
+                    await self._checkpoint_store.delete(
+                        checkpoint_id
+                    )
+
                 yield {
                     "type": "token",
                     "text": text,
@@ -207,8 +237,72 @@ class ReactRuntime:
                     content=f"Observation: {result.content}",
                 )
             )
+            if (
+                checkpoint_id is not None
+                and self._checkpoint_store is not None
+            ):
+                await self._checkpoint_store.save(
+                    HarnessCheckpoint(
+                        checkpoint_id=checkpoint_id,
+                        runtime="react",
+                        next_iteration=iteration + 1,
+                        messages=ctx.messages,
+                        user_input=ctx.user_input,
+                        max_iterations=ctx.max_iterations,
+                        metadata={
+                            "model_name": self._model.model_name,
+                        },
+                    )
+                )
+
+        if (
+            checkpoint_id is not None
+            and self._checkpoint_store is not None
+        ):
+            await self._checkpoint_store.delete(
+                checkpoint_id
+            )
 
         yield {
             "type": "final",
             "text": "（多轮工具调用后仍未得到结论）",
         }
+
+    async def resume(
+        self,
+        checkpoint_id: uuid.UUID,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """从 ReAct checkpoint 恢复执行。"""
+
+        if self._checkpoint_store is None:
+            raise RuntimeError(
+                "ReactRuntime 未配置 checkpoint_store"
+            )
+
+        checkpoint = await self._checkpoint_store.load(
+            checkpoint_id
+        )
+
+        if checkpoint is None:
+            raise ValueError(
+                f"checkpoint 不存在: {checkpoint_id}"
+            )
+
+        if checkpoint.runtime != "react":
+            raise ValueError(
+                "checkpoint runtime 类型不匹配: "
+                f"{checkpoint.runtime}"
+            )
+
+        ctx = ExecutionContext(
+            messages=checkpoint.messages,
+            max_iterations=checkpoint.max_iterations,
+            user_input=checkpoint.user_input,
+        )
+
+        async for event in self.run(
+            ctx,
+            checkpoint_id=checkpoint.checkpoint_id,
+            start_iteration=checkpoint.next_iteration,
+        ):
+            yield event
