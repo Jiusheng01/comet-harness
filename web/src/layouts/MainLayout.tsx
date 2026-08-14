@@ -1,24 +1,22 @@
-import { Avatar, Badge, Button, Drawer, Dropdown, Input, Layout, Menu, Space, message } from 'antd'
+import { Avatar, Badge, Button, Drawer, Dropdown, Input, Layout, Menu, message } from 'antd'
 import {
   AppstoreOutlined,
   BellOutlined,
   BookOutlined,
-  CommentOutlined,
   ClockCircleOutlined,
-  DeploymentUnitOutlined,
+  CommentOutlined,
+  DownOutlined,
+  FileSearchOutlined,
   HddOutlined,
   HistoryOutlined,
-  FileSearchOutlined,
   LogoutOutlined,
-  MenuFoldOutlined,
   MenuUnfoldOutlined,
-  PictureOutlined,
   PlusOutlined,
   RobotOutlined,
+  RocketOutlined,
   SearchOutlined,
   SettingOutlined,
   ShareAltOutlined,
-  StarOutlined,
   ThunderboltOutlined,
   ToolOutlined,
   UserOutlined,
@@ -29,93 +27,85 @@ import { useAuthStore } from '@/stores/authStore'
 import { useChatHeaderStore } from '@/stores/chatHeaderStore'
 import { agentTaskApi } from '@/api/agentTask'
 import { AuthenticatedImage } from '@/components/AuthenticatedImage'
-import logo from '@/images/logo.png'
 
 const { Sider, Content, Header } = Layout
 
-// 分组导航：按职责归类，分组标题灰色小字，更清晰
 const menuItems = [
   {
     type: 'group' as const,
     label: '工作台',
+    children: [{ key: '/', icon: <AppstoreOutlined />, label: '仪表盘' }],
+  },
+  {
+    type: 'group' as const,
+    label: '工作负载',
     children: [
-      { key: '/', icon: <AppstoreOutlined />, label: '仪表盘' },
       { key: '/chat', icon: <CommentOutlined />, label: '对话' },
       { key: '/research', icon: <FileSearchOutlined />, label: '深度研究' },
       { key: '/agent-tasks', icon: <ClockCircleOutlined />, label: '定时任务' },
-      { key: '/traces', icon: <HistoryOutlined />, label: '执行轨迹' },
     ],
   },
   {
     type: 'group' as const,
-    label: '知识与记忆',
+    label: '运行',
+    children: [{ key: '/traces', icon: <HistoryOutlined />, label: '执行记录' }],
+  },
+  {
+    type: 'group' as const,
+    label: '知识与上下文',
     children: [
       { key: '/knowledge', icon: <BookOutlined />, label: '知识库' },
-      { key: '/images', icon: <PictureOutlined />, label: '图片库' },
       { key: '/memory', icon: <HddOutlined />, label: '记忆' },
-      { key: '/graph', icon: <DeploymentUnitOutlined />, label: '知识图谱' },
     ],
   },
   {
     type: 'group' as const,
-    label: '检索与收藏',
+    label: '配置',
     children: [
-      { key: '/search', icon: <SearchOutlined />, label: '全局搜索' },
-      { key: '/favorites', icon: <StarOutlined />, label: '收藏夹' },
-    ],
-  },
-  {
-    type: 'group' as const,
-    label: '设置',
-    children: [
+      { key: '/settings/agent', icon: <RobotOutlined />, label: 'Agent 配置' },
       { key: '/settings/models', icon: <SettingOutlined />, label: '模型配置' },
-      { key: '/settings/agent', icon: <RobotOutlined />, label: '角色配置' },
-      { key: '/settings/skills', icon: <ThunderboltOutlined />, label: '技能' },
+      { key: '/settings/skills', icon: <ThunderboltOutlined />, label: 'Skills' },
       { key: '/settings/tools', icon: <ToolOutlined />, label: '工具配置' },
-      { key: '/settings/notify', icon: <BellOutlined />, label: '消息推送' },
     ],
   },
 ]
 
-// 小屏（手机/窄平板）检测：≤768px 走抽屉式侧边栏
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(
     () => typeof window !== 'undefined' && window.innerWidth <= 768,
   )
+
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 768px)')
-    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches)
+    const handler = (event: MediaQueryListEvent) => setIsMobile(event.matches)
     mq.addEventListener('change', handler)
     return () => mq.removeEventListener('change', handler)
   }, [])
+
   return isMobile
 }
 
 export default function MainLayout() {
   const navigate = useNavigate()
   const location = useLocation()
-  const user = useAuthStore((s) => s.user)
-  const logout = useAuthStore((s) => s.logout)
+  const user = useAuthStore((state) => state.user)
+  const logout = useAuthStore((state) => state.logout)
   const isMobile = useIsMobile()
-  // 聊天页注册的顶栏操作（手机端聊天页用它替代搜索框，合并成一行）
-  const chatHeaderActive = useChatHeaderStore((s) => s.active)
-  const chatOpenHistory = useChatHeaderStore((s) => s.openHistory)
-  const chatNewChat = useChatHeaderStore((s) => s.newChat)
-  const chatOpenShare = useChatHeaderStore((s) => s.openShare)
-  const chatCanShare = useChatHeaderStore((s) => s.canShare)
+
+  const chatHeaderActive = useChatHeaderStore((state) => state.active)
+  const chatOpenHistory = useChatHeaderStore((state) => state.openHistory)
+  const chatNewChat = useChatHeaderStore((state) => state.newChat)
+  const chatOpenShare = useChatHeaderStore((state) => state.openShare)
+  const chatCanShare = useChatHeaderStore((state) => state.canShare)
   const showChatHeader = isMobile && chatHeaderActive && location.pathname === '/chat'
 
-  // 桌面端：侧边栏折叠（窄条）；移动端：抽屉开关
-  const [collapsed, setCollapsed] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [unreadTasks, setUnreadTasks] = useState(0)
 
-  // 切换路由后自动关闭移动端抽屉
   useEffect(() => {
     setDrawerOpen(false)
   }, [location.pathname])
 
-  // 定时任务未读红点：轮询 + 路由切换时刷新（离开任务页 mark-seen 后归零）
-  const [unreadTasks, setUnreadTasks] = useState(0)
   useEffect(() => {
     let alive = true
     const fetchUnread = () => {
@@ -134,8 +124,6 @@ export default function MainLayout() {
     }
   }, [location.pathname])
 
-
-  // 主壳挂载时锁死 html/body 滚动（比 :has 更稳），卸载后恢复登录/分享页整页滚动
   useEffect(() => {
     const root = document.documentElement
     root.classList.add('app-shell-active')
@@ -148,8 +136,25 @@ export default function MainLayout() {
     navigate('/login', { replace: true })
   }
 
-  // logo 头部（桌面 Sider 与移动抽屉共用）
-  const brand = (mini: boolean) => (
+  const profileMenu = {
+    items: [
+      {
+        key: 'profile',
+        icon: <UserOutlined />,
+        label: '个人中心',
+        onClick: () => navigate('/profile'),
+      },
+      { type: 'divider' as const },
+      {
+        key: 'logout',
+        icon: <LogoutOutlined />,
+        label: '退出登录',
+        onClick: onLogout,
+      },
+    ],
+  }
+
+  const brand = (
     <div
       style={{
         height: 64,
@@ -157,49 +162,106 @@ export default function MainLayout() {
         display: 'flex',
         alignItems: 'center',
         gap: 10,
-        paddingInline: mini ? 0 : 20,
-        justifyContent: mini ? 'center' : 'flex-start',
-        color: '#171719',
-        overflow: 'hidden',
+        paddingInline: 20,
+        color: '#232536',
       }}
     >
-      <img
-        src={logo}
-        alt="彗记"
-        style={{ width: 36, height: 36, borderRadius: 9, objectFit: 'cover', flexShrink: 0 }}
-      />
-      {!mini && (
-        <span style={{ fontWeight: 600, fontSize: 19, whiteSpace: 'nowrap' }}>彗记 Comet</span>
-      )}
+      <span
+        style={{
+          width: 30,
+          height: 30,
+          borderRadius: 10,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: '#6256d9',
+          background: 'linear-gradient(135deg, #f0edff, #e9efff)',
+          fontSize: 17,
+          flexShrink: 0,
+        }}
+      >
+        <RocketOutlined />
+      </span>
+      <span style={{ fontWeight: 700, fontSize: 18, whiteSpace: 'nowrap' }}>Comet</span>
     </div>
   )
 
-  const navMenu = (mini: boolean) => {
-    // 给「定时任务」注入未读红点（不改全局静态 menuItems）
-    const items = menuItems.map((group) =>
-      'children' in group
-        ? {
-            ...group,
-            children: group.children.map((it) =>
-              it.key === '/agent-tasks' && unreadTasks > 0 && !mini
-                ? {
-                    ...it,
-                    label: (
-                      <Badge count={unreadTasks} size="small" offset={[10, 0]}>
-                        <span>{it.label}</span>
-                      </Badge>
-                    ),
-                  }
-                : it,
-            ),
-          }
-        : group,
-    )
+  const sidebarUser = (
+    <Dropdown menu={profileMenu} placement="topLeft" trigger={['click']}>
+      <button
+        type="button"
+        style={{
+          width: 'calc(100% - 24px)',
+          minHeight: 52,
+          margin: '10px 12px 12px',
+          padding: '8px 10px',
+          border: 0,
+          borderRadius: 11,
+          background: 'transparent',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 9,
+          textAlign: 'left',
+          cursor: 'pointer',
+        }}
+      >
+        {user?.avatar ? (
+          <AuthenticatedImage
+            src={user.avatar}
+            alt="头像"
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: '50%',
+              objectFit: 'cover',
+              display: 'block',
+              flexShrink: 0,
+            }}
+          />
+        ) : (
+          <Avatar size={30} style={{ background: '#5b57c8', flexShrink: 0 }}>
+            {user?.username?.[0]?.toUpperCase() ?? <UserOutlined />}
+          </Avatar>
+        )}
+        <span
+          style={{
+            minWidth: 0,
+            flex: 1,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            color: '#444657',
+            fontSize: 12,
+          }}
+        >
+          {user?.email || user?.nickname || user?.username || '用户'}
+        </span>
+        <DownOutlined style={{ color: '#a2a5b4', fontSize: 10 }} />
+      </button>
+    </Dropdown>
+  )
+
+  const navMenu = () => {
+    const items = menuItems.map((group) => ({
+      ...group,
+      children: group.children.map((item) =>
+        item.key === '/agent-tasks' && unreadTasks > 0
+          ? {
+              ...item,
+              label: (
+                <Badge count={unreadTasks} size="small" offset={[10, 0]}>
+                  <span>{item.label}</span>
+                </Badge>
+              ),
+            }
+          : item,
+      ),
+    }))
+
     return (
       <Menu
         mode="inline"
         theme="light"
-        inlineCollapsed={mini}
         selectedKeys={[location.pathname]}
         items={items}
         onClick={({ key }) => navigate(key)}
@@ -208,33 +270,30 @@ export default function MainLayout() {
     )
   }
 
+  const sidebarBody = (
+    <>
+      {brand}
+      <div className="app-shell-sider-menu" style={{ paddingBottom: 4 }}>
+        {navMenu()}
+      </div>
+      <div style={{ flexShrink: 0, borderTop: '1px solid #f2f3f5' }}>{sidebarUser}</div>
+    </>
+  )
+
   return (
-    <Layout
-      style={{ height: '100%', overflow: 'hidden' }}
-      className="app-shell"
-    >
-      {/* 桌面端：常驻可折叠侧边栏 */}
+    <Layout style={{ height: '100%', overflow: 'hidden' }} className="app-shell">
       {!isMobile && (
         <Sider
           width={236}
-          collapsible
-          collapsed={collapsed}
-          trigger={null}
-          collapsedWidth={72}
           style={{
             borderInlineEnd: '1px solid #f0f0f0',
-            background: undefined,
-            transition: 'background 0.4s',
+            background: '#fff',
           }}
         >
-          {brand(collapsed)}
-          <div className="app-shell-sider-menu" style={{ paddingBottom: 12 }}>
-            {navMenu(collapsed)}
-          </div>
+          {sidebarBody}
         </Sider>
       )}
 
-      {/* 移动端：抽屉式侧边栏 */}
       {isMobile && (
         <Drawer
           placement="left"
@@ -243,58 +302,41 @@ export default function MainLayout() {
           width={236}
           closable={false}
           styles={{
-            body: { padding: 0, display: 'flex', flexDirection: 'column', height: '100%' },
+            body: {
+              padding: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              height: '100%',
+            },
           }}
         >
-          {brand(false)}
-          <div className="app-shell-sider-menu" style={{ paddingBottom: 12 }}>
-            {navMenu(false)}
-          </div>
+          {sidebarBody}
         </Drawer>
       )}
 
-      <Layout
-        className="app-shell-main"
-        style={{
-          background: undefined,
-          transition: 'background 0.4s',
-        }}
-      >
+      <Layout className="app-shell-main" style={{ background: '#fafafa' }}>
         <Header
           style={{
             flexShrink: 0,
-            paddingInline: isMobile ? 12 : 24,
+            height: 64,
+            paddingInline: isMobile ? 12 : 20,
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 8,
+            gap: 12,
             borderBottom: '1px solid #f0f0f0',
-            background: undefined,
-            backdropFilter: undefined,
-            transition: 'background 0.4s',
+            background: '#fff',
           }}
         >
-          <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
+          {isMobile && (
             <Button
               type="text"
               aria-label="菜单"
-              icon={
-                isMobile ? (
-                  <MenuUnfoldOutlined />
-                ) : collapsed ? (
-                  <MenuUnfoldOutlined />
-                ) : (
-                  <MenuFoldOutlined />
-                )
-              }
-              onClick={() =>
-                isMobile ? setDrawerOpen(true) : setCollapsed((c) => !c)
-              }
-              style={{ color: undefined, fontSize: 18 }}
+              icon={<MenuUnfoldOutlined />}
+              onClick={() => setDrawerOpen(true)}
+              style={{ flexShrink: 0, fontSize: 18 }}
             />
-          </div>
+          )}
 
-          {/* 中间区：手机端聊天页显示「会话 / 新对话」，其余页面显示搜索框 */}
           {showChatHeader ? (
             <div
               style={{
@@ -304,29 +346,16 @@ export default function MainLayout() {
                 alignItems: 'center',
                 gap: 8,
                 minWidth: 0,
-                padding: '0 8px',
               }}
             >
-              <Button
-                type="text"
-                icon={<HistoryOutlined />}
-                onClick={() => chatOpenHistory?.()}
-              >
+              <Button type="text" icon={<HistoryOutlined />} onClick={() => chatOpenHistory?.()}>
                 会话
               </Button>
-              <Button
-                type="text"
-                icon={<PlusOutlined />}
-                onClick={() => chatNewChat?.()}
-              >
+              <Button type="text" icon={<PlusOutlined />} onClick={() => chatNewChat?.()}>
                 新对话
               </Button>
               {chatCanShare && (
-                <Button
-                  type="text"
-                  icon={<ShareAltOutlined />}
-                  onClick={() => chatOpenShare?.()}
-                >
+                <Button type="text" icon={<ShareAltOutlined />} onClick={() => chatOpenShare?.()}>
                   分享
                 </Button>
               )}
@@ -336,79 +365,76 @@ export default function MainLayout() {
               style={{
                 flex: 1,
                 display: 'flex',
-                justifyContent: 'center',
+                justifyContent: 'flex-start',
                 minWidth: 0,
-                padding: isMobile ? '0 8px' : '0 16px',
               }}
             >
               <Input
-                className={`top-search${''}`}
-                prefix={<SearchOutlined style={{ color: '#98A2B3' }} />}
-                placeholder={isMobile ? '搜索…' : '搜索文档、图片、记忆…'}
+                className="top-search"
+                prefix={<SearchOutlined style={{ color: '#9da0af' }} />}
+                placeholder={isMobile ? '搜索…' : '搜索知识、对话、记忆...'}
                 allowClear
-                style={{ width: '100%', maxWidth: 560 }}
-                onPressEnter={(e) => {
-                  const q = (e.target as HTMLInputElement).value.trim()
+                style={{ width: '100%', maxWidth: 410 }}
+                onPressEnter={(event) => {
+                  const q = (event.target as HTMLInputElement).value.trim()
                   if (q) navigate(`/search?q=${encodeURIComponent(q)}`)
                 }}
               />
             </div>
           )}
 
-          <Dropdown
-            menu={{
-              items: [
-                {
-                  key: 'profile',
-                  icon: <UserOutlined />,
-                  label: '个人中心',
-                  onClick: () => navigate('/profile'),
-                },
-                { type: 'divider' },
-                {
-                  key: 'logout',
-                  icon: <LogoutOutlined />,
-                  label: '退出登录',
-                  onClick: onLogout,
-                },
-              ],
-            }}
-          >
-            <Space align="center" style={{ cursor: 'pointer', flexShrink: 0 }}>
+          <Badge count={unreadTasks} size="small" offset={[-2, 5]}>
+            <Button
+              type="text"
+              aria-label="自动任务通知"
+              icon={<BellOutlined />}
+              onClick={() => navigate('/agent-tasks')}
+              style={{ flexShrink: 0, color: '#505263' }}
+            />
+          </Badge>
+
+          <Dropdown menu={profileMenu} placement="bottomRight">
+            <button
+              type="button"
+              aria-label="用户菜单"
+              style={{
+                border: 0,
+                padding: 0,
+                background: 'transparent',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                flexShrink: 0,
+              }}
+            >
               {user?.avatar ? (
                 <AuthenticatedImage
-                    src={user.avatar}
-                    alt="头像"
-                    style={{
-                      width: 30,
-                      height: 30,
-                      borderRadius: '50%',
-                      objectFit: 'cover',
-                      display: 'block',
-                    }}
-                  />
-                ) : (
-                  <Avatar size={30} style={{ background: '#155EEF' }}>
-                    {user?.username?.[0]?.toUpperCase() ?? <UserOutlined />}
-                  </Avatar>
-                )}
-                {!isMobile && (
-                  <span style={{ fontWeight: 500, color: undefined }}>
-                    {user?.nickname || user?.username || '用户'}
-                  </span>
-                )}
-              </Space>
-            </Dropdown>
-          </Header>
-          <Content
-            className="app-shell-content"
-            style={{
-              padding: isMobile ? 14 : 24,
-            }}
-          >
-            <Outlet />
-          </Content>
-        </Layout>
+                  src={user.avatar}
+                  alt="头像"
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: '50%',
+                    objectFit: 'cover',
+                    display: 'block',
+                  }}
+                />
+              ) : (
+                <Avatar size={32} style={{ background: '#23314d' }}>
+                  {user?.username?.[0]?.toUpperCase() ?? <UserOutlined />}
+                </Avatar>
+              )}
+            </button>
+          </Dropdown>
+        </Header>
+
+        <Content
+          className="app-shell-content"
+          style={{ padding: isMobile ? 14 : 20 }}
+        >
+          <Outlet />
+        </Content>
       </Layout>
-    )
-  }
+    </Layout>
+  )
+}
