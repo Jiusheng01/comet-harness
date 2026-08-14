@@ -91,6 +91,7 @@ export default function MainLayout() {
   const user = useAuthStore((state) => state.user)
   const logout = useAuthStore((state) => state.logout)
   const isMobile = useIsMobile()
+  const isHome = location.pathname === '/'
 
   const chatHeaderActive = useChatHeaderStore((state) => state.active)
   const chatOpenHistory = useChatHeaderStore((state) => state.openHistory)
@@ -182,7 +183,7 @@ export default function MainLayout() {
       >
         <RocketOutlined />
       </span>
-      <span style={{ fontWeight: 700, fontSize: 18, whiteSpace: 'nowrap' }}>Comet</span>
+      <span style={{ fontWeight: 700, fontSize: 19, whiteSpace: 'nowrap' }}>Comet</span>
     </div>
   )
 
@@ -231,7 +232,7 @@ export default function MainLayout() {
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
             color: '#444657',
-            fontSize: 12,
+            fontSize: 13,
           }}
         >
           {user?.email || user?.nickname || user?.username || '用户'}
@@ -284,7 +285,7 @@ export default function MainLayout() {
     <Layout style={{ height: '100%', overflow: 'hidden' }} className="app-shell">
       {!isMobile && (
         <Sider
-          width={236}
+          width={260}
           style={{
             borderInlineEnd: '1px solid #f0f0f0',
             background: '#fff',
@@ -299,7 +300,7 @@ export default function MainLayout() {
           placement="left"
           open={drawerOpen}
           onClose={() => setDrawerOpen(false)}
-          width={236}
+          width={260}
           closable={false}
           styles={{
             body: {
@@ -429,8 +430,11 @@ export default function MainLayout() {
         </Header>
 
         <Content
-          className="app-shell-content"
-          style={{ padding: isMobile ? 14 : 20 }}
+          className={`app-shell-content${isHome ? ' app-shell-content--home' : ''}`}
+          style={{
+            padding: isMobile ? 14 : isHome ? 16 : 20,
+            overflow: !isMobile && isHome ? 'hidden' : undefined,
+          }}
         >
           <Outlet />
         </Content>
