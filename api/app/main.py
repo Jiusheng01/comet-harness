@@ -45,8 +45,28 @@ async def lifespan(_: FastAPI):
         await get_recorder().start()
     except Exception as e:
         logger.warning("Tracing 落库器启动失败（稍后可重试）: %s", e)
+    # 启动：Harness 持久化 checkpoint 自动恢复器
+    from app.core.harness.recovery import get_recovery_worker
+
+    try:
+        await get_recovery_worker().start()
+    except Exception as e:
+        logger.warning(
+            "Harness checkpoint 恢复器启动失败（稍后可手动恢复）: %s",
+            e,
+        )
+
     logger.info("%s 启动完成", settings.app_name)
     yield
+
+    # 关闭：先停 Harness recovery，避免它在连接池关闭期间派生新任务
+    try:
+        await get_recovery_worker().stop()
+    except Exception as e:
+        logger.warning(
+            "Harness checkpoint 恢复器关闭异常: %s",
+            e,
+        )
     # 关闭:先停 Tracing 落库器,把残留 span 排空
     try:
         await get_recorder().stop()

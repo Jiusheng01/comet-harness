@@ -609,6 +609,51 @@ class ChatService:
         # noop / 关闭 tracing 时保持 None。
         trace_id_str: str | None = None
 
+        # Harness execution heartbeat.
+        #
+        # conversation lock 原本只有 120 秒 TTL。
+        # 长工具调用/慢模型可能超过 120 秒，所以后台任务存活期间：
+        # 1. 刷新 conversation lock；
+        # 2. 刷新独立 execution lease。
+        #
+        # 进程硬崩溃后 heartbeat 消失，lease 自动过期，
+        # Recovery Worker 才能安全接管。
+        lease_task: asyncio.Task | None = None
+
+        async def _lease_heartbeat() -> None:
+            if turn_id is None:
+                return
+
+            turn_key = str(turn_id)
+
+            while True:
+                await asyncio.sleep(20)
+
+                await bus.refresh_execution_lease(
+                    turn_key
+                )
+
+                await bus.refresh_turn_lock(
+                    cid
+                )
+
+        if turn_id is not None:
+            await bus.refresh_execution_lease(
+                str(turn_id)
+            )
+
+            await bus.refresh_turn_lock(
+                cid
+            )
+
+            lease_task = asyncio.create_task(
+                _lease_heartbeat(),
+                name=(
+                    "harness_lease:"
+                    f"{turn_id}"
+                ),
+            )
+
         async def _flush_buffer(
             status: str = "generating",
         ) -> None:
@@ -940,6 +985,47 @@ class ChatService:
                 )
 
         except Exception as e:
+            # 普通可捕获异常不是“进程硬崩溃”。
+            # 标记为禁止后台自动重试，避免永久错误形成 retry storm。
+            #
+            # 用户主动 regenerate 仍可显式走 Runtime.resume()；
+            # auto_recover 只约束后台 Recovery Worker。
+            if turn_id is not None:
+                try:
+                    from app.core.harness.checkpoint.postgres_store import (
+                        PostgresCheckpointStore,
+                    )
+
+                    async with SessionLocal() as checkpoint_session:
+                        checkpoint_store = PostgresCheckpointStore(
+                            checkpoint_session,
+                            user_id,
+                        )
+
+                        checkpoint = await checkpoint_store.load(
+                            turn_id
+                        )
+
+                        if checkpoint is not None:
+                            checkpoint.metadata.update(
+                                {
+                                    "auto_recover": False,
+                                    "last_error": str(e)[:500],
+                                }
+                            )
+
+                            await checkpoint_store.save(
+                                checkpoint
+                            )
+
+                except Exception as checkpoint_error:
+                    logger.warning(
+                        "标记 Harness checkpoint 异常状态失败: "
+                        "turn=%s err=%s",
+                        turn_id,
+                        checkpoint_error,
+                    )
+
             logger.error(
                 "问答后台生成失败: conv=%s err=%s",
                 cid,
@@ -968,6 +1054,19 @@ class ChatService:
             )
 
         finally:
+            if lease_task is not None:
+                lease_task.cancel()
+
+                try:
+                    await lease_task
+                except asyncio.CancelledError:
+                    pass
+
+            if turn_id is not None:
+                await bus.clear_execution_lease(
+                    str(turn_id)
+                )
+
             await bus.clear_stream_buffer(
                 cid
             )

@@ -229,3 +229,135 @@ async def list_online(conv_id: str) -> set[str]:
     except Exception as e:
         logger.warning("获取在线列表失败: conv=%s err=%s", conv_id, e)
         return set()
+
+
+
+# ── Harness Runtime liveness lease ───────────────────────────────
+#
+# conversation turn lock 负责互斥；
+# execution lease 负责告诉 Recovery Worker：
+# “这个 checkpoint 对应的原进程仍然活着”。
+#
+# 正常执行每 20 秒刷新一次，因此 TTL 留 60 秒。
+_EXECUTION_LEASE_PREFIX = "harness:execution:lease:"
+_EXECUTION_LEASE_TTL = 60
+
+
+def _execution_lease_key(turn_id: str) -> str:
+    return f"{_EXECUTION_LEASE_PREFIX}{turn_id}"
+
+
+async def refresh_execution_lease(
+    turn_id: str,
+) -> bool:
+    """创建/刷新 Harness execution lease。"""
+
+    try:
+        await get_redis().set(
+            _execution_lease_key(turn_id),
+            "1",
+            ex=_EXECUTION_LEASE_TTL,
+        )
+        return True
+
+    except Exception as e:
+        logger.warning(
+            "刷新 Harness execution lease 失败: "
+            "turn=%s err=%s",
+            turn_id,
+            e,
+        )
+        return False
+
+
+async def has_execution_lease(
+    turn_id: str,
+) -> bool:
+    """当前 turn 是否仍有活跃 execution lease。"""
+
+    try:
+        exists = await get_redis().exists(
+            _execution_lease_key(turn_id)
+        )
+        return bool(exists)
+
+    except Exception as e:
+        logger.warning(
+            "读取 Harness execution lease 失败: "
+            "turn=%s err=%s",
+            turn_id,
+            e,
+        )
+
+        # 无法确认 liveness 时保守认为仍然活着，
+        # Recovery Worker 不应冒险重复执行。
+        return True
+
+
+async def clear_execution_lease(
+    turn_id: str,
+) -> None:
+    try:
+        await get_redis().delete(
+            _execution_lease_key(turn_id)
+        )
+
+    except Exception as e:
+        logger.warning(
+            "清理 Harness execution lease 失败: "
+            "turn=%s err=%s",
+            turn_id,
+            e,
+        )
+
+
+async def refresh_turn_lock(
+    conv_id: str,
+) -> bool:
+    """正常执行 heartbeat 刷新 conversation lock TTL。"""
+
+    try:
+        refreshed = await get_redis().expire(
+            _lock_key(conv_id),
+            _LOCK_TTL,
+        )
+        return bool(refreshed)
+
+    except Exception as e:
+        logger.warning(
+            "刷新 AI 回合锁失败: conv=%s err=%s",
+            conv_id,
+            e,
+        )
+        return False
+
+
+async def acquire_turn_lock_strict(
+    conv_id: str,
+) -> bool:
+    """Recovery 专用 fail-closed 回合锁。
+
+    与 acquire_turn_lock() 使用相同 Redis key，
+    但 Redis 异常时返回 False。
+
+    恢复任务宁可稍后再试，也不能因为 Redis 故障
+    在多个 worker 中重复执行同一个 checkpoint。
+    """
+
+    try:
+        ok = await get_redis().set(
+            _lock_key(conv_id),
+            "recovery",
+            nx=True,
+            ex=_LOCK_TTL,
+        )
+        return bool(ok)
+
+    except Exception as e:
+        logger.warning(
+            "Recovery 获取严格回合锁失败: "
+            "conv=%s err=%s",
+            conv_id,
+            e,
+        )
+        return False
