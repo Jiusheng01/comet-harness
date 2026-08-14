@@ -1,0 +1,8 @@
+/* App-shell pages should use the available workspace width. Reading-focused pages can still opt into .fluid-narrow. */
+@media (min-width: 769px) {
+  .app-shell .fluid-page {
+    width: 100%;
+    max-width: none;
+    margin-inline: 0;
+  }
+}
