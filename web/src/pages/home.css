@@ -786,3 +786,9 @@
     display: none;
   }
 }
+
+/* 首页单独放宽：保留全局 .fluid-page 的 1200px 规则给其他页面，
+   这里只减少宽屏下两侧过大的空白。 */
+.comet-home.fluid-page {
+  max-width: 1480px;
+}
