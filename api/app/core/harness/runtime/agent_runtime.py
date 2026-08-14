@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
 from app.core.agent.tracing import get_tracer
 from app.core.harness.context import ContextManager
+from app.core.harness.checkpoint import (
+    CheckpointStore,
+    HarnessCheckpoint,
+)
 from app.core.harness.runtime.contracts import (
     ExecutionContext,
     HarnessMessage,
@@ -33,22 +38,31 @@ class AgentRuntime:
         tool_executor: ToolExecutor,
         model_tools: list[Any],
         context_manager: ContextManager,
+        checkpoint_store: CheckpointStore | None = None,
     ) -> None:
         self._model = model
         self._tool_executor = tool_executor
         self._model_tools = model_tools
         self._context_manager = context_manager
+        self._checkpoint_store = checkpoint_store
 
     async def run(
         self,
         ctx: ExecutionContext,
+        *,
+        checkpoint_id: uuid.UUID | None = None,
+        start_iteration: int = 0,
+        accumulated_text: str = "",
     ) -> AsyncGenerator[dict[str, Any], None]:
         """执行 Function Calling Agent Loop。"""
 
-        full_text = ""
+        full_text = accumulated_text
         tracer = get_tracer()
 
-        for iteration in range(ctx.max_iterations):
+        for iteration in range(
+            start_iteration,
+            ctx.max_iterations,
+        ):
             prepared = self._context_manager.prepare(ctx.messages)
             last_message_text = self._last_message_text(prepared.messages)
 
@@ -171,6 +185,14 @@ class AgentRuntime:
 
             # 没有工具调用，本轮就是最终答案。
             if not turn.tool_calls:
+                if (
+                    checkpoint_id is not None
+                    and self._checkpoint_store is not None
+                ):
+                    await self._checkpoint_store.delete(
+                        checkpoint_id
+                    )
+
                 yield {
                     "type": "final",
                     "text": full_text,
@@ -212,12 +234,79 @@ class AgentRuntime:
                         tool_call_id=tool_call.id,
                     )
                 )
+            if (
+                checkpoint_id is not None
+                and self._checkpoint_store is not None
+            ):
+                await self._checkpoint_store.save(
+                    HarnessCheckpoint(
+                        checkpoint_id=checkpoint_id,
+                        runtime="function_calling",
+                        next_iteration=iteration + 1,
+                        messages=ctx.messages,
+                        accumulated_text=full_text,
+                        user_input=ctx.user_input,
+                        max_iterations=ctx.max_iterations,
+                        metadata={
+                            "model_name": self._model.model_name,
+                        },
+                    )
+                )
+
+        # 循环结束（达到最大迭代次数），删除 checkpoint 并返回最终结果
+        if (
+            checkpoint_id is not None
+            and self._checkpoint_store is not None
+        ):
+            await self._checkpoint_store.delete(
+                checkpoint_id
+            )
 
         yield {
             "type": "final",
             "text": full_text or "（未能生成回答）",
         }
 
+    async def resume(
+        self,
+        checkpoint_id: uuid.UUID,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """从 Function Calling checkpoint 恢复执行。"""
+
+        if self._checkpoint_store is None:
+            raise RuntimeError(
+                "AgentRuntime 未配置 checkpoint_store"
+            )
+
+        checkpoint = await self._checkpoint_store.load(
+            checkpoint_id
+        )
+
+        if checkpoint is None:
+            raise ValueError(
+                f"checkpoint 不存在: {checkpoint_id}"
+            )
+
+        if checkpoint.runtime != "function_calling":
+            raise ValueError(
+                "checkpoint runtime 类型不匹配: "
+                f"{checkpoint.runtime}"
+            )
+
+        ctx = ExecutionContext(
+            messages=checkpoint.messages,
+            max_iterations=checkpoint.max_iterations,
+            user_input=checkpoint.user_input,
+        )
+
+        async for event in self.run(
+            ctx,
+            checkpoint_id=checkpoint.checkpoint_id,
+            start_iteration=checkpoint.next_iteration,
+            accumulated_text=checkpoint.accumulated_text,
+        ):
+            yield event
+            
     @staticmethod
     def _last_message_text(
         messages: list[HarnessMessage],
