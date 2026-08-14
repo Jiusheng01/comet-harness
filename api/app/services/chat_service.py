@@ -129,13 +129,38 @@ class ChatService:
         self.skill_repo = SkillRepository(session)
 
     @staticmethod
-    def _user_meta(attachments: list, image_keys: list[str]) -> dict | None:
-        """组装 user 消息的 meta_data：对话附件 + 图片 key（供历史还原与分享）。"""
+    def _user_meta(
+        attachments: list,
+        image_keys: list[str],
+        body: ChatStreamRequest | None = None,
+    ) -> dict | None:
+        """Build durable metadata for the user turn.
+
+        Besides attachments/images, persist the request options that
+        affect Harness execution so a recovery worker can rebuild the
+        same tool/skill environment after a process restart.
+        """
         meta: dict = {}
+
         if attachments:
             meta["attachments"] = attachments
+
         if image_keys:
             meta["image_keys"] = list(image_keys)
+
+        if body is not None:
+            meta["harness_request"] = {
+                "version": 1,
+                "skill_id": (
+                    str(body.skill_id)
+                    if body.skill_id is not None
+                    else None
+                ),
+                "enable_knowledge": body.enable_knowledge,
+                "enable_memory": body.enable_memory,
+                "enable_web_search": body.enable_web_search,
+            }
+
         return meta or None
 
     async def _ensure_conversation(
@@ -419,6 +444,7 @@ class ChatService:
                             meta_data=self._user_meta(
                                 attachments,
                                 body.image_keys,
+                                body,
                             ),
                         )
                     )
@@ -813,6 +839,9 @@ class ChatService:
                         "tool_calls": tool_calls,
                     }
 
+                    if turn_id is not None:
+                        meta["turn_id"] = str(turn_id)
+
                     if trace_id_str:
                         meta[
                             "trace_id"
@@ -838,6 +867,34 @@ class ChatService:
                     await svc.conv_repo.touch(
                         conv_id
                     )
+
+                    # The assistant result is the durable business ACK.
+                    # Commit it before removing the Harness checkpoint.
+                    await session.commit()
+
+                    if turn_id is not None:
+                        try:
+                            from app.core.harness.checkpoint.postgres_store import (
+                                PostgresCheckpointStore,
+                            )
+
+                            ack_store = PostgresCheckpointStore(
+                                session=session,
+                                user_id=user_id,
+                            )
+
+                            await ack_store.delete(turn_id)
+
+                        except Exception as e:
+                            # The answer is already durable. A failed ACK
+                            # must not turn a successful chat into an error.
+                            # Recovery will clean the stale checkpoint later.
+                            logger.warning(
+                                "Harness checkpoint ACK failed: "
+                                "turn=%s err=%s",
+                                turn_id,
+                                e,
+                            )
 
                     # 副作用失败不影响主回复。
                     await svc._dispatch_memory(
@@ -1040,6 +1097,7 @@ class ChatService:
                 stats_holder=stats_holder,
                 checkpoint_store=checkpoint_store,
                 checkpoint_id=checkpoint_id,
+                cleanup_checkpoint_on_finish=False,
             ):
                 yield ev
         else:
@@ -1053,6 +1111,7 @@ class ChatService:
                 stats_holder=stats_holder,
                 checkpoint_store=checkpoint_store,
                 checkpoint_id=checkpoint_id,
+                cleanup_checkpoint_on_finish=False,
             ):
                 yield ev
 

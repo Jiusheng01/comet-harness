@@ -5,11 +5,11 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from app.core.agent.tracing import get_tracer
-from app.core.harness.context import ContextManager
 from app.core.harness.checkpoint import (
     CheckpointStore,
     HarnessCheckpoint,
 )
+from app.core.harness.context import ContextManager
 from app.core.harness.runtime.contracts import (
     ExecutionContext,
     HarnessMessage,
@@ -53,18 +53,56 @@ class AgentRuntime:
         checkpoint_id: uuid.UUID | None = None,
         start_iteration: int = 0,
         accumulated_text: str = "",
+        cleanup_checkpoint_on_finish: bool = True,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """执行 Function Calling Agent Loop。"""
+        """执行 Function Calling Agent Loop。
+
+        cleanup_checkpoint_on_finish=True:
+            Runtime 正常结束后自行清理 checkpoint。
+
+        cleanup_checkpoint_on_finish=False:
+            Runtime 正常结束后保留 checkpoint，
+            由上层业务在最终结果持久化成功后 ACK 删除。
+        """
 
         full_text = accumulated_text
         tracer = get_tracer()
+
+        # 在真正调用模型之前就建立初始 checkpoint。
+        #
+        # 这样即使第一轮还没有工具调用，进程就在模型调用过程中崩溃，
+        # 新进程也可以从 iteration 0 重新开始。
+        if (
+            checkpoint_id is not None
+            and self._checkpoint_store is not None
+            and start_iteration == 0
+        ):
+            await self._checkpoint_store.save(
+                HarnessCheckpoint(
+                    checkpoint_id=checkpoint_id,
+                    runtime="function_calling",
+                    next_iteration=0,
+                    messages=ctx.messages,
+                    accumulated_text=full_text,
+                    user_input=ctx.user_input,
+                    max_iterations=ctx.max_iterations,
+                    metadata={
+                        "model_name": self._model.model_name,
+                    },
+                )
+            )
 
         for iteration in range(
             start_iteration,
             ctx.max_iterations,
         ):
-            prepared = self._context_manager.prepare(ctx.messages)
-            last_message_text = self._last_message_text(prepared.messages)
+            prepared = self._context_manager.prepare(
+                ctx.messages
+            )
+
+            last_message_text = self._last_message_text(
+                prepared.messages
+            )
 
             turn: ModelTurn | None = None
             iteration_text = ""
@@ -74,7 +112,9 @@ class AgentRuntime:
                 model_name=self._model.model_name,
                 attributes={
                     "comet.chat.iteration": iteration + 1,
-                    "comet.chat.tools_bound": len(self._model_tools),
+                    "comet.chat.tools_bound": len(
+                        self._model_tools
+                    ),
                     "comet.harness.runtime": "agent",
                 },
             ) as span:
@@ -87,34 +127,42 @@ class AgentRuntime:
                     "context.original_messages",
                     prepared.stats.original_messages,
                 )
+
                 span.set_payload(
                     "context.final_messages",
                     prepared.stats.final_messages,
                 )
+
                 span.set_payload(
                     "context.original_tokens",
                     prepared.stats.original_tokens,
                 )
+
                 span.set_payload(
                     "context.final_tokens",
                     prepared.stats.final_tokens,
                 )
+
                 span.set_payload(
                     "context.dropped_messages",
                     prepared.stats.dropped_messages,
                 )
+
                 span.set_payload(
                     "context.dropped_blocks",
                     prepared.stats.dropped_blocks,
                 )
+
                 span.set_payload(
                     "context.truncated_tool_messages",
                     prepared.stats.truncated_tool_messages,
                 )
+
                 span.set_payload(
                     "context.compacted",
                     prepared.stats.compacted,
                 )
+
                 span.set_payload(
                     "context.over_budget",
                     prepared.stats.over_budget,
@@ -162,6 +210,7 @@ class AgentRuntime:
                         "response_preview",
                         iteration_text[:600],
                     )
+
                 elif turn.tool_calls:
                     span.set_payload(
                         "response_preview",
@@ -175,7 +224,11 @@ class AgentRuntime:
 
             # 某些 provider 可能最终返回 text，
             # 但 streaming 阶段没有产生 token。
-            if not iteration_text and turn.text and not turn.tool_calls:
+            if (
+                not iteration_text
+                and turn.text
+                and not turn.tool_calls
+            ):
                 full_text += turn.text
 
                 yield {
@@ -186,7 +239,8 @@ class AgentRuntime:
             # 没有工具调用，本轮就是最终答案。
             if not turn.tool_calls:
                 if (
-                    checkpoint_id is not None
+                    cleanup_checkpoint_on_finish
+                    and checkpoint_id is not None
                     and self._checkpoint_store is not None
                 ):
                     await self._checkpoint_store.delete(
@@ -210,7 +264,11 @@ class AgentRuntime:
 
             for tool_call in turn.tool_calls:
                 query = str(
-                    tool_call.arguments.get("query", "") or ""
+                    tool_call.arguments.get(
+                        "query",
+                        "",
+                    )
+                    or ""
                 )
 
                 yield {
@@ -234,6 +292,9 @@ class AgentRuntime:
                         tool_call_id=tool_call.id,
                     )
                 )
+
+            # 只有整个工具批次执行完成后，
+            # 才推进 checkpoint 的 next_iteration。
             if (
                 checkpoint_id is not None
                 and self._checkpoint_store is not None
@@ -253,9 +314,10 @@ class AgentRuntime:
                     )
                 )
 
-        # 循环结束（达到最大迭代次数），删除 checkpoint 并返回最终结果
+        # 达到最大迭代次数。
         if (
-            checkpoint_id is not None
+            cleanup_checkpoint_on_finish
+            and checkpoint_id is not None
             and self._checkpoint_store is not None
         ):
             await self._checkpoint_store.delete(
@@ -270,6 +332,8 @@ class AgentRuntime:
     async def resume(
         self,
         checkpoint_id: uuid.UUID,
+        *,
+        cleanup_checkpoint_on_finish: bool = True,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """从 Function Calling checkpoint 恢复执行。"""
 
@@ -304,9 +368,12 @@ class AgentRuntime:
             checkpoint_id=checkpoint.checkpoint_id,
             start_iteration=checkpoint.next_iteration,
             accumulated_text=checkpoint.accumulated_text,
+            cleanup_checkpoint_on_finish=(
+                cleanup_checkpoint_on_finish
+            ),
         ):
             yield event
-            
+
     @staticmethod
     def _last_message_text(
         messages: list[HarnessMessage],
@@ -314,4 +381,5 @@ class AgentRuntime:
         for message in reversed(messages):
             if message.content:
                 return message.content
+
         return ""

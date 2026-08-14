@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import re
 import uuid
-
 from collections.abc import AsyncGenerator
 from typing import Any
 
 from app.core.agent.tracing import get_tracer
-from app.core.harness.context import ContextManager
 from app.core.harness.checkpoint import (
     CheckpointStore,
     HarnessCheckpoint,
 )
+from app.core.harness.context import ContextManager
 from app.core.harness.runtime.contracts import (
     ExecutionContext,
     HarnessMessage,
@@ -22,8 +21,13 @@ from app.core.harness.tools.executor import ToolExecutor
 
 
 _ACTION_RE = re.compile(r"Action\s*:\s*(.+)")
-_ACTION_INPUT_RE = re.compile(r"Action\s*Input\s*:\s*(.+)")
-_FINAL_RE = re.compile(r"Final\s*Answer\s*:\s*(.*)", re.DOTALL)
+_ACTION_INPUT_RE = re.compile(
+    r"Action\s*Input\s*:\s*(.+)"
+)
+_FINAL_RE = re.compile(
+    r"Final\s*Answer\s*:\s*(.*)",
+    re.DOTALL,
+)
 
 
 class ReactRuntime:
@@ -56,14 +60,40 @@ class ReactRuntime:
         *,
         checkpoint_id: uuid.UUID | None = None,
         start_iteration: int = 0,
+        cleanup_checkpoint_on_finish: bool = True,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        """执行 ReAct Agent Loop。"""
+
         tracer = get_tracer()
+
+        # 第一轮模型调用之前建立 checkpoint。
+        if (
+            checkpoint_id is not None
+            and self._checkpoint_store is not None
+            and start_iteration == 0
+        ):
+            await self._checkpoint_store.save(
+                HarnessCheckpoint(
+                    checkpoint_id=checkpoint_id,
+                    runtime="react",
+                    next_iteration=0,
+                    messages=ctx.messages,
+                    user_input=ctx.user_input,
+                    max_iterations=ctx.max_iterations,
+                    metadata={
+                        "model_name": self._model.model_name,
+                    },
+                )
+            )
 
         for iteration in range(
             start_iteration,
             ctx.max_iterations,
         ):
-            prepared = self._context_manager.prepare(ctx.messages)
+            prepared = self._context_manager.prepare(
+                ctx.messages
+            )
+
             turn: ModelTurn | None = None
             response_text = ""
 
@@ -99,42 +129,52 @@ class ReactRuntime:
                     cached=turn.usage.cached_tokens,
                     model_name=self._model.model_name,
                 )
+
                 span.set_payload(
                     "messages_count",
                     len(prepared.messages),
                 )
+
                 span.set_payload(
                     "context.original_messages",
                     prepared.stats.original_messages,
                 )
+
                 span.set_payload(
                     "context.final_messages",
                     prepared.stats.final_messages,
                 )
+
                 span.set_payload(
                     "context.original_tokens",
                     prepared.stats.original_tokens,
                 )
+
                 span.set_payload(
                     "context.final_tokens",
                     prepared.stats.final_tokens,
                 )
+
                 span.set_payload(
                     "context.dropped_messages",
                     prepared.stats.dropped_messages,
                 )
+
                 span.set_payload(
                     "context.dropped_blocks",
                     prepared.stats.dropped_blocks,
                 )
+
                 span.set_payload(
                     "context.truncated_tool_messages",
                     prepared.stats.truncated_tool_messages,
                 )
+
                 span.set_payload(
                     "context.compacted",
                     prepared.stats.compacted,
                 )
+
                 span.set_payload(
                     "context.over_budget",
                     prepared.stats.over_budget,
@@ -149,10 +189,15 @@ class ReactRuntime:
             final_match = _FINAL_RE.search(text)
 
             if final_match:
-                answer = final_match.group(1).strip()
+                answer = (
+                    final_match
+                    .group(1)
+                    .strip()
+                )
 
                 if (
-                    checkpoint_id is not None
+                    cleanup_checkpoint_on_finish
+                    and checkpoint_id is not None
                     and self._checkpoint_store is not None
                 ):
                     await self._checkpoint_store.delete(
@@ -171,11 +216,14 @@ class ReactRuntime:
                 return
 
             action_match = _ACTION_RE.search(text)
-            input_match = _ACTION_INPUT_RE.search(text)
+            input_match = _ACTION_INPUT_RE.search(
+                text
+            )
 
             if not action_match:
                 if (
-                    checkpoint_id is not None
+                    cleanup_checkpoint_on_finish
+                    and checkpoint_id is not None
                     and self._checkpoint_store is not None
                 ):
                     await self._checkpoint_store.delete(
@@ -219,7 +267,9 @@ class ReactRuntime:
 
             result = await self._tool_executor.execute(
                 tool_name=tool_name,
-                args={"query": query},
+                args={
+                    "query": query,
+                },
             )
 
             yield result.to_event()
@@ -234,9 +284,14 @@ class ReactRuntime:
             ctx.messages.append(
                 HarnessMessage(
                     role="user",
-                    content=f"Observation: {result.content}",
+                    content=(
+                        f"Observation: {result.content}"
+                    ),
                 )
             )
+
+            # Action + Observation 都写入上下文后，
+            # 才推进 checkpoint。
             if (
                 checkpoint_id is not None
                 and self._checkpoint_store is not None
@@ -256,7 +311,8 @@ class ReactRuntime:
                 )
 
         if (
-            checkpoint_id is not None
+            cleanup_checkpoint_on_finish
+            and checkpoint_id is not None
             and self._checkpoint_store is not None
         ):
             await self._checkpoint_store.delete(
@@ -271,6 +327,8 @@ class ReactRuntime:
     async def resume(
         self,
         checkpoint_id: uuid.UUID,
+        *,
+        cleanup_checkpoint_on_finish: bool = True,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """从 ReAct checkpoint 恢复执行。"""
 
@@ -304,5 +362,8 @@ class ReactRuntime:
             ctx,
             checkpoint_id=checkpoint.checkpoint_id,
             start_iteration=checkpoint.next_iteration,
+            cleanup_checkpoint_on_finish=(
+                cleanup_checkpoint_on_finish
+            ),
         ):
             yield event

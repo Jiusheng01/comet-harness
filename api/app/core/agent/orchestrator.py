@@ -21,6 +21,10 @@ Checkpoint / Resume：
 - 同时传入：
   - checkpoint 不存在 -> 从头 run，并持续保存 checkpoint；
   - checkpoint 已存在 -> 从持久化状态 resume。
+
+cleanup_checkpoint_on_finish：
+- True：Runtime 正常完成后自行删除 checkpoint；
+- False：保留 checkpoint，由业务层持久化最终结果后 ACK 删除。
 """
 
 from __future__ import annotations
@@ -32,7 +36,9 @@ from typing import TYPE_CHECKING
 from langchain_core.tools import StructuredTool
 from langchain_openai import ChatOpenAI
 
-from app.core.agent.prompt_renderer import render_agent_prompt
+from app.core.agent.prompt_renderer import (
+    render_agent_prompt,
+)
 from app.core.harness.adapters import (
     LangChainModelAdapter,
     from_langchain_messages,
@@ -44,10 +50,14 @@ from app.core.harness.runtime import (
     HarnessMessage,
     ReactRuntime,
 )
-from app.core.harness.tools.executor import ToolExecutor
+from app.core.harness.tools.executor import (
+    ToolExecutor,
+)
 
 if TYPE_CHECKING:
-    from app.core.harness.checkpoint.store import CheckpointStore
+    from app.core.harness.checkpoint.store import (
+        CheckpointStore,
+    )
 
 
 MAX_TOOL_ITERATIONS = 5
@@ -59,7 +69,11 @@ def _validate_checkpoint_args(
 ) -> None:
     """checkpoint store 与 id 必须同时传入或同时省略。"""
 
-    if (checkpoint_store is None) != (checkpoint_id is None):
+    if (
+        checkpoint_store is None
+    ) != (
+        checkpoint_id is None
+    ):
         raise ValueError(
             "checkpoint_store 和 checkpoint_id 必须同时提供"
         )
@@ -71,7 +85,10 @@ async def _has_checkpoint(
 ) -> bool:
     """判断当前执行是否已经存在可恢复 checkpoint。"""
 
-    if checkpoint_store is None or checkpoint_id is None:
+    if (
+        checkpoint_store is None
+        or checkpoint_id is None
+    ):
         return False
 
     checkpoint = await checkpoint_store.load(
@@ -88,16 +105,9 @@ async def run_function_calling(
     stats_holder: dict[str, dict] | None = None,
     checkpoint_store: CheckpointStore | None = None,
     checkpoint_id: uuid.UUID | None = None,
+    cleanup_checkpoint_on_finish: bool = True,
 ) -> AsyncGenerator[dict, None]:
-    """强模型路径：由 Harness AgentRuntime 驱动 Function Calling。
-
-    checkpoint_store + checkpoint_id 均未提供时，
-    保持原来的无持久化运行方式。
-
-    两者均提供时：
-    - checkpoint 已存在：resume；
-    - checkpoint 不存在：run，并在稳定边界保存 checkpoint。
-    """
+    """强模型路径：由 Harness AgentRuntime 驱动 Function Calling。"""
 
     _validate_checkpoint_args(
         checkpoint_store,
@@ -144,7 +154,10 @@ async def run_function_calling(
         assert checkpoint_id is not None
 
         async for event in runtime.resume(
-            checkpoint_id
+            checkpoint_id,
+            cleanup_checkpoint_on_finish=(
+                cleanup_checkpoint_on_finish
+            ),
         ):
             yield event
 
@@ -153,6 +166,9 @@ async def run_function_calling(
     async for event in runtime.run(
         ctx,
         checkpoint_id=checkpoint_id,
+        cleanup_checkpoint_on_finish=(
+            cleanup_checkpoint_on_finish
+        ),
     ):
         yield event
 
@@ -166,16 +182,9 @@ async def run_react(
     stats_holder: dict[str, dict] | None = None,
     checkpoint_store: CheckpointStore | None = None,
     checkpoint_id: uuid.UUID | None = None,
+    cleanup_checkpoint_on_finish: bool = True,
 ) -> AsyncGenerator[dict, None]:
-    """弱模型路径：由 Harness ReactRuntime 驱动 ReAct 工具循环。
-
-    checkpoint_store + checkpoint_id 均未提供时，
-    保持原来的无持久化运行方式。
-
-    两者均提供时：
-    - checkpoint 已存在：resume；
-    - checkpoint 不存在：run，并在稳定边界保存 checkpoint。
-    """
+    """弱模型路径：由 Harness ReactRuntime 驱动 ReAct 工具循环。"""
 
     _validate_checkpoint_args(
         checkpoint_store,
@@ -246,7 +255,10 @@ async def run_react(
         assert checkpoint_id is not None
 
         async for event in runtime.resume(
-            checkpoint_id
+            checkpoint_id,
+            cleanup_checkpoint_on_finish=(
+                cleanup_checkpoint_on_finish
+            ),
         ):
             yield event
 
@@ -255,6 +267,9 @@ async def run_react(
     async for event in runtime.run(
         ctx,
         checkpoint_id=checkpoint_id,
+        cleanup_checkpoint_on_finish=(
+            cleanup_checkpoint_on_finish
+        ),
     ):
         yield event
 
