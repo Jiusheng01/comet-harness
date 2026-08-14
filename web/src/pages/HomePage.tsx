@@ -277,7 +277,7 @@ export default function HomePage() {
   ]
 
   return (
-    <div className="comet-home fluid-page">
+    <div className="comet-home">
       <section className="comet-hero">
         <div className="comet-hero__content">
           <div className="comet-hero__title">你好，{displayName} 👋</div>
