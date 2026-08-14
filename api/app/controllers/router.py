@@ -24,7 +24,6 @@ from app.controllers import (
     mcp_controller,
     memory_controller,
     model_config_controller,
-    music_controller,
     notify_controller,
     persona_group_controller,
     research_controller,
@@ -56,7 +55,6 @@ api_router.include_router(search_controller.router)
 api_router.include_router(favorite_controller.router)
 api_router.include_router(dashboard_controller.router)
 api_router.include_router(emotion_controller.router)
-api_router.include_router(music_controller.router)
 api_router.include_router(research_controller.router)
 api_router.include_router(agent_task_controller.router)
 api_router.include_router(notify_controller.router)

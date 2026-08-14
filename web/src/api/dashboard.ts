@@ -10,7 +10,7 @@ export interface DailyReview {
   date: string
   content: string
   care?: string
-  stats: { messages: number; memories: number; documents: number; songs?: number } | null
+  stats: { messages: number; memories: number; documents: number } | null
   generating?: boolean
   created_at: string
 }

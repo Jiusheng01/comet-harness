@@ -82,7 +82,7 @@ flowchart TB
 | 记忆 | `04-记忆/` | 三元组萃取+四层溯源图谱+事件、实体去重、图混合检索、社区聚类 LPA、记忆分层巩固、反思 Insight、主动召回、跨会话 |
 | 多 Agent 编排 | `05-多Agent编排/` | 深度研究引擎（规划-检索-提炼-写作）、定时主动任务调度、多 Agent 群聊（主持人调度） |
 | 工程化与部署 | `06-工程化与部署/` | 账号鉴权/安全、Celery 多队列、分享导出、消息推送、部署 HTTPS、踩坑集 |
-| 情绪与个性化 | `07-情绪与个性化/` | valence-arousal 情绪计算、情绪化音乐推荐、真人对话模式、AI 主动关心/每日回顾 |
+| 情绪与个性化 | `07-情绪与个性化/` | valence-arousal 情绪计算、情绪感知与个性化、真人对话模式、AI 主动关心/每日回顾 |
 
 ---
 
@@ -92,7 +92,7 @@ flowchart TB
 `controller → service → repository → model/db` 单向调用：controller 只做路由/校验/包装响应；service 写业务、编排 repository 与外部调用；repository 只做存取。横切能力放 `core/` 按子系统分目录，子系统内再按流水线阶段拆（记忆分 preprocessing/extraction/retrieval/clustering）。
 
 ### 5.2 异步任务解耦
-耗时操作（文档解析、记忆萃取、社区聚类、情绪分析、深度研究、定时任务）走 Celery，接口立即返回。队列按域拆：`parse`（解析/图片/歌曲）/ `memory`（萃取/情绪）/ `beat`（定时：每日回顾、聚类、巩固、心跳）/ `research`（深度研究执行，与心跳分队列防堵）。
+耗时操作（文档解析、记忆萃取、社区聚类、情绪分析、深度研究、定时任务）走 Celery，接口立即返回。队列按域拆：`parse`（解析/图片）/ `memory`（萃取/情绪）/ `beat`（定时：每日回顾、聚类、巩固、心跳）/ `research`（深度研究执行，与心跳分队列防堵）。
 > 踩坑：Celery 任务内用 `asyncio.run` 跑异步；每任务用任务级独立 DB 引擎（NullPool）避免全局单例绑到已关闭事件循环；Windows worker 用 `--pool=solo`。
 
 ### 5.3 统一响应与异常

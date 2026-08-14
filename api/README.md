@@ -43,7 +43,6 @@ api/
 │   │   ├── tool_controller.py          # 内置工具配置（注册中心 + 开关）
 │   │   ├── mcp_controller.py           # MCP Server 配置 + 工具发现/测试
 │   │   ├── emotion_controller.py       # 当前情绪画像 / 趋势 / 记录 / 分布
-│   │   ├── music_controller.py         # 音乐推荐 + 曲库 CRUD + 上传 + 音源解析 + 咪咕搜索
 │   │   ├── research_controller.py      # 深度研究 SSE 流式 + 列表/详情/删除/save-to-kb + 报告分享/导出(v0.0.4)
 │   │   ├── agent_task_controller.py    # 定时任务 CRUD + 运行历史 + 立即运行 + 未读红点(v0.0.4)
 │   │   ├── notify_controller.py        # 消息推送渠道 CRUD + 测试推送(v0.0.4)
@@ -60,7 +59,7 @@ api/
 │   ├── models/              # SQLAlchemy ORM 模型（users / model_configs / documents / images /
 │   │                        #   tags / memories / conversations / messages / agent_configs /
 │   │                        #   favorites / daily_reviews / message_feedbacks / tool_configs /
-│   │                        #   mcp_servers / emotion_records / emotion_profiles / songs /
+│   │                        #   mcp_servers / emotion_records / emotion_profiles /
 │   │                        #   research_reports / agent_tasks / report_shares / notify_channels(v0.0.4)
 │   │                        #   loop_runs / loop_iterations / agent_traces / agent_spans /
 │   │                        #   memory_corrections(v0.0.5)）
@@ -107,11 +106,6 @@ api/
 │   │   │   ├── analyzer.py  #     LLM 单轮情绪分析（重试 + 健壮解析 + 中性兜底）
 │   │   │   ├── aggregator.py#     最近 N 条滚动聚合为当前画像
 │   │   │   └── prompts/     #     情绪抽取模板
-│   │   ├── music/           #   情绪化音乐推荐
-│   │   │   ├── migu_client.py #   咪咕搜索 / listenSong 取免费直链 / 歌词
-│   │   │   ├── mood_tagger.py #   LLM 给歌标 valence/arousal/标签
-│   │   │   ├── recommender.py #   情绪距离 + 偏好歌手 打分排序
-│   │   │   └── prompts/     #     歌曲情绪标注模板
 │   │   └── storage/         #   文件存储抽象（本地 LocalStorage / 阿里云 OssStorage + 工厂）
 │   │
 │   ├── tasks/               # Celery 异步任务
@@ -119,7 +113,6 @@ api/
 │   │   ├── image.py         #   图片处理全流程
 │   │   ├── memory.py        #   记忆萃取
 │   │   ├── emotion.py       #   对话情绪分析 + 画像刷新
-│   │   ├── music.py         #   歌曲处理（补封面歌词 + 情绪标注 + 音源验证）
 │   │   └── beat.py          #   定时：每日回顾 / 全量社区聚类 / 记忆巩固
 │   │
 │   └── db/                  # 四存储连接：postgres / elastic / neo4j / redis（含连接池配置）
@@ -285,9 +278,9 @@ uv run alembic upgrade head                          # 应用
 
 ## Celery 异步任务
 
-耗时操作（文档解析、记忆萃取、情绪分析、歌曲处理、社区聚类）走异步队列，接口立即返回。
+耗时操作（文档解析、记忆萃取、情绪分析、社区聚类）走异步队列，接口立即返回。
 
-队列规划：`parse`（解析 / 图片 / 歌曲处理）、`memory`（记忆萃取 / 情绪分析）、`beat`（定时：每日回顾 / 全量聚类 / 记忆巩固 / 定时任务调度心跳）、`research`（定时任务的深度研究执行，重活独立队列，避免堵住心跳）、`default`。
+队列规划：`parse`（解析 / 图片）、`memory`（记忆萃取 / 情绪分析）、`beat`（定时：每日回顾 / 全量聚类 / 记忆巩固 / 定时任务调度心跳）、`research`（定时任务的深度研究执行，重活独立队列，避免堵住心跳）、`default`。
 
 ```bash
 # Worker（Windows 必须 --pool=solo）

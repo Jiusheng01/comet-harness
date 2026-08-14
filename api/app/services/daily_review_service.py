@@ -16,7 +16,6 @@ from app.models.conversation_model import ROLE_USER, Conversation, Message
 from app.models.daily_review_model import DailyReview
 from app.models.document_model import Document
 from app.models.memory_model import Memory
-from app.models.play_history_model import PlayHistory
 
 logger = get_logger(__name__)
 
@@ -79,29 +78,10 @@ class DailyReviewService:
         )
         documents = [r[0] for r in doc_rows.all()]
 
-        # 今天听的歌（去重歌名，保留顺序）
-        song_rows = await self.session.execute(
-            select(PlayHistory.title, PlayHistory.artist)
-            .where(
-                PlayHistory.user_id == user_id,
-                PlayHistory.played_at >= start,
-                PlayHistory.played_at <= end,
-            )
-            .order_by(PlayHistory.played_at.asc())
-        )
-        seen: set[str] = set()
-        songs: list[str] = []
-        for title, artist in song_rows.all():
-            label = f"{title}（{artist}）" if artist else title
-            if label not in seen:
-                seen.add(label)
-                songs.append(label)
-
         return {
             "messages": messages,
             "memories": memories,
             "documents": documents,
-            "songs": songs,
         }
 
     async def _collect_mood(self, user_id: uuid.UUID) -> str:
@@ -138,12 +118,10 @@ class DailyReviewService:
         """
         from app.core.llm.resolver import get_optional_client_for_type
 
-        songs = data.get("songs", [])
         total = (
             len(data["messages"])
             + len(data["memories"])
             + len(data["documents"])
-            + len(songs)
         )
         content_fallback = (
             "今天还没有新动态，休息一下也很好 🌿"
@@ -151,8 +129,7 @@ class DailyReviewService:
             else (
                 f"今天有 {len(data['messages'])} 次提问、"
                 f"记住了 {len(data['memories'])} 件事、"
-                f"新增了 {len(data['documents'])} 份文档、"
-                f"听了 {len(songs)} 首歌。"
+                f"新增了 {len(data['documents'])} 份文档。"
             )
         )
         if total == 0:
@@ -176,14 +153,11 @@ class DailyReviewService:
         self, client, data: dict, mood: str, fallback: str
     ) -> str:
         """调用 LLM 生成回顾正文（带一次重试）。"""
-        songs = data.get("songs", [])
         prompt = render_prompt(
             "daily_review.jinja2",
             messages="；".join(data["messages"][:20]) or "（无）",
             memories="；".join(data["memories"][:30]) or "（无）",
             documents="、".join(data["documents"]) or "（无）",
-            song_count=len(songs),
-            songs="、".join(songs[:20]) or "（无）",
             mood=mood or "（暂无情绪数据）",
         )
         for attempt in range(2):
@@ -242,20 +216,17 @@ class DailyReviewService:
     @staticmethod
     def _instant_content(data: dict) -> str:
         """即时（非 LLM）兜底简报：用统计数拼一句话，供首屏秒显，后台再补全 LLM 正文。"""
-        songs = data.get("songs", [])
         total = (
             len(data["messages"])
             + len(data["memories"])
             + len(data["documents"])
-            + len(songs)
         )
         if total == 0:
             return "今天还没有新动态，休息一下也很好 🌿"
         return (
             f"今天有 {len(data['messages'])} 次提问、"
             f"记住了 {len(data['memories'])} 件事、"
-            f"新增了 {len(data['documents'])} 份文档、"
-            f"听了 {len(songs)} 首歌。"
+            f"新增了 {len(data['documents'])} 份文档。"
         )
 
     async def _upsert(
@@ -301,7 +272,6 @@ class DailyReviewService:
             "messages": len(data["messages"]),
             "memories": len(data["memories"]),
             "documents": len(data["documents"]),
-            "songs": len(data.get("songs", [])),
         }
         content, care = await self._generate_content_and_care(user_id, data)
         review = await self._upsert(self.session, user_id, day, content, care, stats)
@@ -326,7 +296,6 @@ class DailyReviewService:
             "messages": len(data["messages"]),
             "memories": len(data["memories"]),
             "documents": len(data["documents"]),
-            "songs": len(data.get("songs", [])),
         }
         total = sum(stats.values())
 
@@ -387,7 +356,7 @@ class DailyReviewService:
         old = old or {}
         return all(
             int(old.get(k, 0) or 0) == int(new.get(k, 0) or 0)
-            for k in ("messages", "memories", "documents", "songs")
+            for k in ("messages", "memories", "documents")
         )
 
     @staticmethod

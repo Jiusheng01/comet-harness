@@ -25,7 +25,7 @@
 flowchart LR
   API[接口] -->|落库+派发| BROKER[(Redis broker)]
   BEAT[Celery beat 定时] -->|按 schedule 派发| BROKER
-  BROKER --> Q1[parse 解析/图片/歌曲]
+  BROKER --> Q1[parse 解析/图片]
   BROKER --> Q2[memory 萃取/情绪]
   BROKER --> Q3[beat 聚类/回顾/巩固/反思/心跳]
   BROKER --> Q4[research 深度研究执行]
@@ -41,7 +41,7 @@ flowchart LR
 ### 3.1 按域拆队列（`celery_app.task_routes`）
 
 四个队列按任务特性拆：
-- **parse**：文档解析 / 图片描述 / 歌曲处理（IO + 解析）。
+- **parse**：文档解析 / 图片描述（IO + 解析）。
 - **memory**：记忆三元组萃取 / 情绪分析（多次调 LLM）。
 - **beat**：社区聚类 / 每日回顾 / 记忆巩固 / 反思 / **定时任务心跳**（轻量、定时，不可被重活堵）。
 - **research**：定时任务的深度研究执行（最重，几分钟，单独队列）。

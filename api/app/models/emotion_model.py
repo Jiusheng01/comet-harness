@@ -1,7 +1,7 @@
 """情绪记忆 ORM 模型 —— PostgreSQL emotion_records / emotion_profiles 表。
 
 每轮对话异步分析用户情绪，结构化存储（离散主情绪 + valence-arousal 维度），
-并滚动维护用户「当前情绪画像」，供仪表盘展示与下游（音乐推荐）消费。
+并滚动维护用户「当前情绪画像」，供仪表盘展示、每日回顾与个性化交互消费。
 情绪数据独立于 Neo4j 记忆图谱，仅存 PG。
 """
 import uuid

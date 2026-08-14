@@ -6,7 +6,6 @@ import {
   BulbOutlined,
   CheckCircleFilled,
   CommentOutlined,
-  CustomerServiceOutlined,
   DeploymentUnitOutlined,
   ExperimentOutlined,
   HddOutlined,
@@ -176,7 +175,6 @@ export default function HomePage() {
     { icon: <ExperimentOutlined />, label: '深度研究', desc: '一句话产出带来源报告', to: '/research', color: '#EB2F96' },
     { icon: <DeploymentUnitOutlined />, label: '图谱可视化', desc: '关系网络与时间线', to: '/graph', color: '#FF8A34' },
     { icon: <ThunderboltOutlined />, label: '执行轨迹', desc: 'Loop 健康度与成本', to: '/traces', color: '#FAAD14' },
-    { icon: <CustomerServiceOutlined />, label: '情绪音乐', desc: '随心情推荐歌单', to: '/music', color: '#13C2C2' },
   ]
 
   const allReady = hasChat && hasEmbedding

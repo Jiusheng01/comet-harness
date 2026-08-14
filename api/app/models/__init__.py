@@ -24,11 +24,9 @@ from app.models.message_feedback_model import MessageFeedback
 from app.models.model_config_model import ModelConfig
 from app.models.notify_channel_model import NotifyChannel
 from app.models.persona_group_model import PersonaGroup
-from app.models.play_history_model import PlayHistory
 from app.models.report_share_model import ReportShare
 from app.models.research_report_model import ResearchReport
 from app.models.skill_model import Skill
-from app.models.song_model import Song
 from app.models.tag_model import Tag, document_tags, image_tags
 from app.models.tool_config_model import ToolConfig
 from app.models.user_model import User
@@ -59,11 +57,9 @@ __all__ = [
     "ModelConfig",
     "NotifyChannel",
     "PersonaGroup",
-    "PlayHistory",
     "ReportShare",
     "ResearchReport",
     "Skill",
-    "Song",
     "Tag",
     "document_tags",
     "image_tags",

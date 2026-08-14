@@ -21,7 +21,6 @@ celery_app = Celery(
         "app.tasks.image",
         "app.tasks.memory",
         "app.tasks.emotion",
-        "app.tasks.music",
         "app.tasks.beat",
         "app.tasks.agent_task",
     ],
@@ -40,7 +39,6 @@ celery_app.conf.update(
         "app.tasks.image.*": {"queue": "parse"},
         "app.tasks.memory.*": {"queue": "memory"},
         "app.tasks.emotion.*": {"queue": "memory"},
-        "app.tasks.music.*": {"queue": "parse"},
         "app.tasks.beat.*": {"queue": "beat"},
         # 调度心跳留 beat 队列（轻量）；研究执行进独立 research 队列，避免长任务堵死心跳
         "app.tasks.agent_task.heartbeat": {"queue": "beat"},
