@@ -352,7 +352,11 @@ class ChatService:
         )
 
     async def stream_chat(
-        self, user_id: uuid.UUID, body: ChatStreamRequest, skip_user_message: bool = False
+        self,
+        user_id: uuid.UUID,
+        body: ChatStreamRequest,
+        skip_user_message: bool = False,
+        turn_id: uuid.UUID | None = None,
     ) -> AsyncGenerator[str, None]:
         """SSE 流式问答（触发 + 转发模型）。
 
@@ -360,25 +364,44 @@ class ChatService:
         通过 Redis 频道广播 token；本连接只「订阅频道并转发」给当前客户端。这样客户端中途断开
         （切页面/关标签）只会停止转发，后台生成照常跑完并落库——回来重拉历史能看到完整回复，
         生成中重连还能续传（见 resume_events）。
+
+        turn_id 表示本轮稳定执行 ID：
+        - 正常聊天：使用本轮 user message id
+        - regenerate：复用原 user message id
+        后续可直接作为 Harness checkpoint_id。
         """
         user_text = body.message.strip()
-        # 前置 PG 工作（建会话 + 落 user 消息）用「用完即关」的独立 session，
-        # 避免请求依赖 session 在整个转发期间被挂着——转发只用 Redis，不占 PG 连接，
-        # 客户端断开也不会留下未归还的连接（修 GC 回收连接告警）。
+
         attachments = [
-            {"file_name": a.file_name, "text": a.text} for a in body.attachments if a.text
+            {
+                "file_name": a.file_name,
+                "text": a.text,
+            }
+            for a in body.attachments
+            if a.text
         ]
+
         try:
             async with SessionLocal() as session:
                 svc = ChatService(session)
-                conv = await svc._ensure_conversation(user_id, body)
+
+                conv = await svc._ensure_conversation(
+                    user_id,
+                    body,
+                )
+
                 cid = str(conv.id)
                 title = conv.title
+
                 if not skip_user_message:
-                    # AI 主动开场白（今日回顾「聊聊」）：仅新会话首轮，先把开场白作为
-                    # assistant 消息落库，使其进入对话历史，模型回复时能接住这个话题。
+                    # AI 主动开场白（今日回顾「聊聊」）：
+                    # 仅新会话首轮，先把开场白作为 assistant 消息落库。
                     greeting = (body.greeting or "").strip()
-                    if greeting and await svc.msg_repo.count(conv.id) == 0:
+
+                    if (
+                        greeting
+                        and await svc.msg_repo.count(conv.id) == 0
+                    ):
                         await svc.msg_repo.add(
                             Message(
                                 conversation_id=conv.id,
@@ -386,38 +409,77 @@ class ChatService:
                                 content=greeting,
                             )
                         )
-                    await svc.msg_repo.add(
+
+                    # 本轮 user message 的 UUID 作为稳定 turn_id。
+                    user_msg = await svc.msg_repo.add(
                         Message(
                             conversation_id=conv.id,
                             role=ROLE_USER,
                             content=user_text,
-                            meta_data=self._user_meta(attachments, body.image_keys),
+                            meta_data=self._user_meta(
+                                attachments,
+                                body.image_keys,
+                            ),
                         )
                     )
+
+                    turn_id = user_msg.id
+
         except Exception as e:
-            yield _sse("error", {"message": str(e)})
+            yield _sse(
+                "error",
+                {
+                    "message": str(e),
+                },
+            )
             return
 
-        yield _sse("meta", {"conversation_id": cid, "title": title})
+        yield _sse(
+            "meta",
+            {
+                "conversation_id": cid,
+                "title": title,
+            },
+        )
 
-        # 先建立订阅再触发生成，消除「token 早于订阅而漏收」的竞态
+        # 先建立订阅再触发生成，
+        # 消除「token 早于订阅而漏收」的竞态。
         conv_uuid = uuid.UUID(cid)
+
         pubsub = await bus.open_channel(cid)
+
         try:
-            # 拿回合锁：若已有同会话生成在跑（用户重复发/并发），不重复触发，只转发现有生成
+            # 拿回合锁：
+            # 若已有同会话生成在跑，不重复触发，只转发现有生成。
             if await bus.acquire_turn_lock(cid):
                 task = asyncio.create_task(
                     self._run_chat_turn_bg(
-                        user_id, conv_uuid, body, attachments, skip_user_message
+                        user_id,
+                        conv_uuid,
+                        body,
+                        attachments,
+                        skip_user_message,
+                        turn_id,
                     )
                 )
+
                 _BG_TASKS.add(task)
-                task.add_done_callback(_BG_TASKS.discard)
-            # 转发频道事件给本客户端，直到 done/error
-            async for sse in self._relay(pubsub, cid):
+                task.add_done_callback(
+                    _BG_TASKS.discard
+                )
+
+            # 转发频道事件给本客户端，直到 done/error。
+            async for sse in self._relay(
+                pubsub,
+                cid,
+            ):
                 yield sse
+
         finally:
-            await bus.close_channel(pubsub, cid)
+            await bus.close_channel(
+                pubsub,
+                cid,
+            )
 
     async def resume_events(
         self, user_id: uuid.UUID, conv_id: uuid.UUID
@@ -499,22 +561,31 @@ class ChatService:
         body: ChatStreamRequest,
         attachments: list[dict],
         skip_user_message: bool,
+        turn_id: uuid.UUID | None,
     ) -> None:
-        """后台生成任务：用独立 session 跑问答，逐 token 广播到频道 + 写续传缓冲，
-        完成后落库 assistant 消息并派发副作用（记忆/图片/情绪），最后广播 done。
+        """后台生成任务。
 
-        与发起请求的 SSE 连接解耦：客户端断开不影响本任务，保证生成跑完、落库。
+        使用独立 session 跑问答，逐 token 广播到频道 + 写续传缓冲，
+        完成后落库 assistant 消息并派发副作用，最后广播 done。
+
+        turn_id 会继续下传到 Harness，作为 checkpoint_id。
         """
         cid = str(conv_id)
         user_text = body.message.strip()
+
         full_text = ""
         tool_calls: list[dict] = []
         citations: list[dict] = []
+
         n = 0
-        # 真实采样到的 trace_id；noop/关闭 tracing 时保持 None，避免写入全 0 UUID
+
+        # 真实采样到的 trace_id；
+        # noop / 关闭 tracing 时保持 None。
         trace_id_str: str | None = None
 
-        async def _flush_buffer(status: str = "generating") -> None:
+        async def _flush_buffer(
+            status: str = "generating",
+        ) -> None:
             payload: dict = {
                 "content": full_text,
                 "n": n,
@@ -522,127 +593,331 @@ class ChatService:
                 "tool_calls": tool_calls,
                 "status": status,
             }
+
             if trace_id_str:
                 payload["trace_id"] = trace_id_str
-            await bus.set_stream_buffer(cid, payload)
+
+            await bus.set_stream_buffer(
+                cid,
+                payload,
+            )
 
         try:
             tracer = get_tracer()
-            # 对话主任务包一层 trace,便于在「执行轨迹」页查看整个对话回合的工具调用/LLM/耗时/成本
+
             async with tracer.trace(
                 user_id=user_id,
                 task_type="chat",
                 task_id=conv_id,
-                task_name=(user_text[:120] or "(空)"),
+                task_name=(
+                    user_text[:120]
+                    or "(空)"
+                ),
             ) as tctx:
-                if not getattr(tctx, "is_noop", False):
-                    trace_id_str = str(tctx.trace_id)
-                    # 尽早推给前端；续传缓冲里也会带上，避免错过 SSE 事件后按钮消失
-                    await bus.publish(cid, "trace", {"trace_id": trace_id_str})
-                    await _flush_buffer("generating")
+                if not getattr(
+                    tctx,
+                    "is_noop",
+                    False,
+                ):
+                    trace_id_str = str(
+                        tctx.trace_id
+                    )
+
+                    await bus.publish(
+                        cid,
+                        "trace",
+                        {
+                            "trace_id": trace_id_str,
+                        },
+                    )
+
+                    await _flush_buffer(
+                        "generating"
+                    )
+
                 async with SessionLocal() as session:
                     svc = ChatService(session)
-                    conv = await svc.conv_repo.get(user_id, conv_id)
+
+                    conv = await svc.conv_repo.get(
+                        user_id,
+                        conv_id,
+                    )
+
                     if conv is None:
-                        await bus.publish(cid, "error", {"message": "会话不存在"})
+                        await bus.publish(
+                            cid,
+                            "error",
+                            {
+                                "message": "会话不存在",
+                            },
+                        )
                         return
-                    await _flush_buffer("generating")
+
+                    await _flush_buffer(
+                        "generating"
+                    )
+
                     async for ev in svc._generate_events(
-                        user_id, conv, body, attachments, citations
+                        user_id,
+                        conv,
+                        body,
+                        attachments,
+                        citations,
+                        checkpoint_id=turn_id,
                     ):
                         etype = ev.get("type")
+
                         if etype == "token":
                             text = ev["text"]
+
                             full_text += text
-                            await bus.publish(cid, "token", {"text": text, "i": n})
+
+                            await bus.publish(
+                                cid,
+                                "token",
+                                {
+                                    "text": text,
+                                    "i": n,
+                                },
+                            )
+
                             n += 1
-                            if n % _BUFFER_FLUSH_EVERY == 0:
-                                await _flush_buffer("generating")
-                        elif etype in {"tool_call", "tool_start"}:
-                            tool_calls.append({
-                                "tool": ev["tool"],
-                                "query": ev.get("query", ""),
-                                "status": "running",
-                            })
+
+                            if (
+                                n
+                                % _BUFFER_FLUSH_EVERY
+                                == 0
+                            ):
+                                await _flush_buffer(
+                                    "generating"
+                                )
+
+                        elif etype in {
+                            "tool_call",
+                            "tool_start",
+                        }:
+                            tool_calls.append(
+                                {
+                                    "tool": ev["tool"],
+                                    "query": ev.get(
+                                        "query",
+                                        "",
+                                    ),
+                                    "status": "running",
+                                }
+                            )
+
                             await bus.publish(
                                 cid,
                                 "tool_start",
-                                {"tool": ev["tool"], "query": ev.get("query", "")},
+                                {
+                                    "tool": ev["tool"],
+                                    "query": ev.get(
+                                        "query",
+                                        "",
+                                    ),
+                                },
                             )
+
                         elif etype == "tool_result":
-                            for item in reversed(tool_calls):
+                            for item in reversed(
+                                tool_calls
+                            ):
                                 if (
-                                    item.get("tool") == ev["tool"]
-                                    and item.get("status") == "running"
+                                    item.get("tool")
+                                    == ev["tool"]
+                                    and item.get(
+                                        "status"
+                                    )
+                                    == "running"
                                 ):
-                                    item["status"] = ev.get("status", "success")
-                                    item["stats"] = ev.get("stats") or {}
-                                    item["latency_ms"] = ev.get("latency_ms")
-                                    item["preview"] = ev.get("text", "")
+                                    item["status"] = (
+                                        ev.get(
+                                            "status",
+                                            "success",
+                                        )
+                                    )
+
+                                    item["stats"] = (
+                                        ev.get("stats")
+                                        or {}
+                                    )
+
+                                    item[
+                                        "latency_ms"
+                                    ] = ev.get(
+                                        "latency_ms"
+                                    )
+
+                                    item[
+                                        "preview"
+                                    ] = ev.get(
+                                        "text",
+                                        "",
+                                    )
+
                                     break
+
                             await bus.publish(
                                 cid,
                                 "tool_result",
                                 {
                                     "tool": ev["tool"],
-                                    "query": ev.get("query", ""),
-                                    "status": ev.get("status", "success"),
-                                    "text": ev.get("text", ""),
-                                    "stats": ev.get("stats") or {},
-                                    "latency_ms": ev.get("latency_ms"),
+                                    "query": ev.get(
+                                        "query",
+                                        "",
+                                    ),
+                                    "status": ev.get(
+                                        "status",
+                                        "success",
+                                    ),
+                                    "text": ev.get(
+                                        "text",
+                                        "",
+                                    ),
+                                    "stats": (
+                                        ev.get("stats")
+                                        or {}
+                                    ),
+                                    "latency_ms": (
+                                        ev.get(
+                                            "latency_ms"
+                                        )
+                                    ),
                                 },
                             )
-                        elif etype == "final" and not full_text:
-                            full_text = ev["text"]
+
+                        elif etype == "final":
+                            full_text = ev.get("text", "") or full_text
+
                         elif etype == "citation":
-                            citations = ev["citations"]
-                            await bus.publish(cid, "citation", {"citations": citations})
+                            citations = ev[
+                                "citations"
+                            ]
+
+                            await bus.publish(
+                                cid,
+                                "citation",
+                                {
+                                    "citations": (
+                                        citations
+                                    ),
+                                },
+                            )
 
                     full_text = full_text.strip()
-                    # 落库 assistant 消息(带引用 + 工具调用元信息 + trace_id 便于前端跳「执行轨迹」)
+
+                    # 落库 assistant 消息。
                     meta: dict = {
                         "citations": citations,
                         "tool_calls": tool_calls,
                     }
+
                     if trace_id_str:
-                        meta["trace_id"] = trace_id_str
-                    assistant_msg = await svc.msg_repo.add(
-                        Message(
-                            conversation_id=conv_id,
-                            role=ROLE_ASSISTANT,
-                            content=full_text,
-                            meta_data=meta,
+                        meta[
+                            "trace_id"
+                        ] = trace_id_str
+
+                    assistant_msg = (
+                        await svc.msg_repo.add(
+                            Message(
+                                conversation_id=(
+                                    conv_id
+                                ),
+                                role=(
+                                    ROLE_ASSISTANT
+                                ),
+                                content=(
+                                    full_text
+                                ),
+                                meta_data=meta,
+                            )
                         )
                     )
-                    await svc.conv_repo.touch(conv_id)
-                    # 副作用（失败不影响）：记忆萃取派发 / 图片入库 / 情绪分析
-                    await svc._dispatch_memory(user_id, user_text)
-                    if body.image_keys:
-                        await svc._ingest_chat_images(user_id, body.image_keys)
-                    if not skip_user_message:
-                        svc._dispatch_emotion(user_id, user_text, conv_id, assistant_msg.id)
 
-                    # 先清缓冲再广播 done：保证「订阅时缓冲若仍在=done 尚未发出」，
-                    # 重连方据此不会订到一个已结束、done 已错过的频道而空等（见 resume_events）。
-                    await bus.clear_stream_buffer(cid)
+                    await svc.conv_repo.touch(
+                        conv_id
+                    )
+
+                    # 副作用失败不影响主回复。
+                    await svc._dispatch_memory(
+                        user_id,
+                        user_text,
+                    )
+
+                    if body.image_keys:
+                        await svc._ingest_chat_images(
+                            user_id,
+                            body.image_keys,
+                        )
+
+                    if not skip_user_message:
+                        svc._dispatch_emotion(
+                            user_id,
+                            user_text,
+                            conv_id,
+                            assistant_msg.id,
+                        )
+
+                    # 先清缓冲，再广播 done。
+                    await bus.clear_stream_buffer(
+                        cid
+                    )
+
                 done_payload: dict = {
                     "conversation_id": cid,
-                    "message_id": str(assistant_msg.id),
+                    "message_id": str(
+                        assistant_msg.id
+                    ),
                 }
+
                 if trace_id_str:
-                    done_payload["trace_id"] = trace_id_str
-                await bus.publish(cid, "done", done_payload)
+                    done_payload[
+                        "trace_id"
+                    ] = trace_id_str
+
+                await bus.publish(
+                    cid,
+                    "done",
+                    done_payload,
+                )
+
         except Exception as e:
-            logger.error("问答后台生成失败: conv=%s err=%s", cid, e, exc_info=True)
-            # 已生成部分内容也落库，避免完全丢失
-            await self._save_partial_on_error(
-                conv_id, full_text, citations, tool_calls, trace_id=trace_id_str
+            logger.error(
+                "问答后台生成失败: conv=%s err=%s",
+                cid,
+                e,
+                exc_info=True,
             )
-            await bus.clear_stream_buffer(cid)
-            await bus.publish(cid, "error", {"message": f"生成失败：{e}"})
+
+            await self._save_partial_on_error(
+                conv_id,
+                full_text,
+                citations,
+                tool_calls,
+                trace_id=trace_id_str,
+            )
+
+            await bus.clear_stream_buffer(
+                cid
+            )
+
+            await bus.publish(
+                cid,
+                "error",
+                {
+                    "message": f"生成失败：{e}",
+                },
+            )
+
         finally:
-            await bus.clear_stream_buffer(cid)
-            await bus.release_turn_lock(cid)
+            await bus.clear_stream_buffer(
+                cid
+            )
+
+            await bus.release_turn_lock(
+                cid
+            )
 
     async def _generate_events(
         self,
@@ -651,6 +926,7 @@ class ChatService:
         body: ChatStreamRequest,
         attachments: list[dict],
         citations: list[dict],
+        checkpoint_id: uuid.UUID | None = None,
     ) -> AsyncGenerator[dict, None]:
         """问答生成核心：组装 prompt/工具 → 按强弱模型/多模态分流 → 产出统一事件字典。
 
@@ -719,6 +995,18 @@ class ChatService:
             self.session, user_id, citations, overrides, stats_holder, kb_ids
         )
         system_prompt = await _assemble_prompt(has_tools=bool(tools))
+        checkpoint_store = None
+
+        if checkpoint_id is not None and tools:
+            from app.core.harness.checkpoint.postgres_store import (
+                PostgresCheckpointStore,
+            )
+
+            checkpoint_store = PostgresCheckpointStore(
+                self.session,
+                user_id,
+            )
+
         if not tools:
             # 无工具：纯流式（仍包一层 llm_call span，保证「执行轨迹」有内容：模型/耗时/token）
             lc_messages: list = []
@@ -743,15 +1031,28 @@ class ChatService:
                 lc_messages.append(SystemMessage(content=system_prompt))
             lc_messages.extend(history)
             lc_messages.append(HumanMessage(content=composed_text))
+
+
             async for ev in run_function_calling(
-                model, tools, lc_messages, stats_holder=stats_holder
+                model,
+                tools,
+                lc_messages,
+                stats_holder=stats_holder,
+                checkpoint_store=checkpoint_store,
+                checkpoint_id=checkpoint_id,
             ):
                 yield ev
         else:
             # 弱模型：ReAct
             async for ev in run_react(
-                model, tools, composed_text, history, system_prompt,
+                model,
+                tools,
+                composed_text,
+                history,
+                system_prompt,
                 stats_holder=stats_holder,
+                checkpoint_store=checkpoint_store,
+                checkpoint_id=checkpoint_id,
             ):
                 yield ev
 
@@ -984,10 +1285,18 @@ class ChatService:
             return
 
         body = ChatStreamRequest(
-            conversation_id=conv.id, message=user_msg.content
+            conversation_id=conv.id,
+            message=user_msg.content,
         )
-        # 复用流式问答；但用户消息已存在，这里跳过再次落 user 消息
-        async for chunk in self.stream_chat(user_id, body, skip_user_message=True):
+
+        # regenerate 不重新创建 user message，
+        # 所以复用原 user message id 作为本轮稳定 turn_id。
+        async for chunk in self.stream_chat(
+            user_id,
+            body,
+            skip_user_message=True,
+            turn_id=user_msg.id,
+        ):
             yield chunk
 
 

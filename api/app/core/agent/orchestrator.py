@@ -15,8 +15,19 @@
 
 工具统计由各工具写入 stats_holder，
 统一由 Harness ToolExecutor 读取并附加到 tool_result 事件。
+
+Checkpoint / Resume：
+- 未传 checkpoint_store + checkpoint_id：保持原来的普通运行模式；
+- 同时传入：
+  - checkpoint 不存在 -> 从头 run，并持续保存 checkpoint；
+  - checkpoint 已存在 -> 从持久化状态 resume。
 """
+
+from __future__ import annotations
+
+import uuid
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 
 from langchain_core.tools import StructuredTool
 from langchain_openai import ChatOpenAI
@@ -35,7 +46,39 @@ from app.core.harness.runtime import (
 )
 from app.core.harness.tools.executor import ToolExecutor
 
+if TYPE_CHECKING:
+    from app.core.harness.checkpoint.store import CheckpointStore
+
+
 MAX_TOOL_ITERATIONS = 5
+
+
+def _validate_checkpoint_args(
+    checkpoint_store: CheckpointStore | None,
+    checkpoint_id: uuid.UUID | None,
+) -> None:
+    """checkpoint store 与 id 必须同时传入或同时省略。"""
+
+    if (checkpoint_store is None) != (checkpoint_id is None):
+        raise ValueError(
+            "checkpoint_store 和 checkpoint_id 必须同时提供"
+        )
+
+
+async def _has_checkpoint(
+    checkpoint_store: CheckpointStore | None,
+    checkpoint_id: uuid.UUID | None,
+) -> bool:
+    """判断当前执行是否已经存在可恢复 checkpoint。"""
+
+    if checkpoint_store is None or checkpoint_id is None:
+        return False
+
+    checkpoint = await checkpoint_store.load(
+        checkpoint_id
+    )
+
+    return checkpoint is not None
 
 
 async def run_function_calling(
@@ -43,12 +86,33 @@ async def run_function_calling(
     tools: list[StructuredTool],
     messages: list,
     stats_holder: dict[str, dict] | None = None,
+    checkpoint_store: CheckpointStore | None = None,
+    checkpoint_id: uuid.UUID | None = None,
 ) -> AsyncGenerator[dict, None]:
-    """强模型路径：由 Harness AgentRuntime 驱动 Function Calling。"""
+    """强模型路径：由 Harness AgentRuntime 驱动 Function Calling。
 
-    stats_holder = stats_holder if stats_holder is not None else {}
+    checkpoint_store + checkpoint_id 均未提供时，
+    保持原来的无持久化运行方式。
 
-    model_adapter = LangChainModelAdapter(model)
+    两者均提供时：
+    - checkpoint 已存在：resume；
+    - checkpoint 不存在：run，并在稳定边界保存 checkpoint。
+    """
+
+    _validate_checkpoint_args(
+        checkpoint_store,
+        checkpoint_id,
+    )
+
+    stats_holder = (
+        stats_holder
+        if stats_holder is not None
+        else {}
+    )
+
+    model_adapter = LangChainModelAdapter(
+        model
+    )
 
     tool_executor = ToolExecutor(
         tools=tools,
@@ -58,7 +122,9 @@ async def run_function_calling(
     context_manager = ContextManager()
 
     ctx = ExecutionContext(
-        messages=from_langchain_messages(messages),
+        messages=from_langchain_messages(
+            messages
+        ),
         stats_holder=stats_holder,
         max_iterations=MAX_TOOL_ITERATIONS,
     )
@@ -68,9 +134,26 @@ async def run_function_calling(
         tool_executor=tool_executor,
         model_tools=tools,
         context_manager=context_manager,
+        checkpoint_store=checkpoint_store,
     )
 
-    async for event in runtime.run(ctx):
+    if await _has_checkpoint(
+        checkpoint_store,
+        checkpoint_id,
+    ):
+        assert checkpoint_id is not None
+
+        async for event in runtime.resume(
+            checkpoint_id
+        ):
+            yield event
+
+        return
+
+    async for event in runtime.run(
+        ctx,
+        checkpoint_id=checkpoint_id,
+    ):
         yield event
 
 
@@ -81,8 +164,23 @@ async def run_react(
     history: list,
     system_prompt: str,
     stats_holder: dict[str, dict] | None = None,
+    checkpoint_store: CheckpointStore | None = None,
+    checkpoint_id: uuid.UUID | None = None,
 ) -> AsyncGenerator[dict, None]:
-    """弱模型路径：由 Harness ReactRuntime 驱动 ReAct 工具循环。"""
+    """弱模型路径：由 Harness ReactRuntime 驱动 ReAct 工具循环。
+
+    checkpoint_store + checkpoint_id 均未提供时，
+    保持原来的无持久化运行方式。
+
+    两者均提供时：
+    - checkpoint 已存在：resume；
+    - checkpoint 不存在：run，并在稳定边界保存 checkpoint。
+    """
+
+    _validate_checkpoint_args(
+        checkpoint_store,
+        checkpoint_id,
+    )
 
     react_prompt = render_agent_prompt(
         "react.jinja2",
@@ -96,14 +194,20 @@ async def run_react(
         system_prompt=system_prompt,
     )
 
-    stats_holder = stats_holder if stats_holder is not None else {}
+    stats_holder = (
+        stats_holder
+        if stats_holder is not None
+        else {}
+    )
 
     messages = [
         HarnessMessage(
             role="system",
             content=react_prompt,
         ),
-        *from_langchain_messages(history),
+        *from_langchain_messages(
+            history
+        ),
         HarnessMessage(
             role="user",
             content=user_text,
@@ -119,7 +223,9 @@ async def run_react(
 
     context_manager = ContextManager()
 
-    model_adapter = LangChainModelAdapter(model)
+    model_adapter = LangChainModelAdapter(
+        model
+    )
 
     tool_executor = ToolExecutor(
         tools=tools,
@@ -130,10 +236,31 @@ async def run_react(
         model=model_adapter,
         tool_executor=tool_executor,
         context_manager=context_manager,
+        checkpoint_store=checkpoint_store,
     )
 
-    async for event in runtime.run(ctx):
+    if await _has_checkpoint(
+        checkpoint_store,
+        checkpoint_id,
+    ):
+        assert checkpoint_id is not None
+
+        async for event in runtime.resume(
+            checkpoint_id
+        ):
+            yield event
+
+        return
+
+    async for event in runtime.run(
+        ctx,
+        checkpoint_id=checkpoint_id,
+    ):
         yield event
 
 
-__all__ = ["run_function_calling", "run_react", "MAX_TOOL_ITERATIONS"]
+__all__ = [
+    "run_function_calling",
+    "run_react",
+    "MAX_TOOL_ITERATIONS",
+]
