@@ -1,8 +1,128 @@
-/* Home is a dashboard, so it should use the shell's available width instead of the generic centered page cap. */
-@media (min-width: 769px) {
-  .comet-home.fluid-page {
-    width: calc(100% + 24px);
-    max-width: none !important;
-    margin-inline: -12px !important;
+/* Wide-screen home refinements. Keep the base home.css conservative and layer
+   dashboard-specific density/scale adjustments here. */
+@media (min-width: 1180px) {
+  .comet-home {
+    gap: 16px;
+  }
+
+  .comet-hero {
+    min-height: 224px;
+    padding: 36px 42px;
+  }
+
+  .comet-hero__content {
+    max-width: 620px;
+  }
+
+  .comet-hero__title {
+    font-size: clamp(30px, 2.1vw, 42px);
+  }
+
+  .comet-hero__art {
+    right: 8px;
+    width: min(46%, 720px);
+    max-height: 268px;
+  }
+
+  .comet-home__top-grid,
+  .comet-home__bottom-grid {
+    gap: 16px;
+    align-items: start;
+  }
+
+  .comet-home__right-stack {
+    grid-template-rows: auto auto;
+    gap: 16px;
+  }
+
+  .comet-card__header {
+    min-height: 50px;
+    font-size: 14px;
+  }
+
+  .comet-recent-card {
+    min-height: 0;
+  }
+
+  .comet-recent-list {
+    flex: 0 0 auto;
+    padding-top: 6px;
+  }
+
+  .comet-recent-item {
+    min-height: 58px;
+  }
+
+  .comet-recent-item__body strong,
+  .comet-task-item__body strong {
+    font-size: 14px;
+  }
+
+  .comet-recent-card__more {
+    margin: 8px 20px 14px;
+  }
+
+  .comet-review-card {
+    min-height: 0;
+  }
+
+  .comet-review-card__body {
+    min-height: 112px;
+    padding: 20px 94px 18px 20px;
+  }
+
+  .comet-review-card__cup {
+    top: 28px;
+  }
+
+  .comet-task-card {
+    min-height: 0;
+  }
+
+  .comet-task-list {
+    padding: 2px 12px 6px;
+  }
+
+  .comet-task-card .comet-empty {
+    min-height: 50px;
+  }
+
+  .comet-knowledge-card,
+  .comet-runtime-card {
+    min-height: 0;
+  }
+
+  .comet-knowledge-grid {
+    gap: 10px;
+    padding: 14px 20px 12px;
+  }
+
+  .comet-knowledge-item {
+    min-height: 82px;
+  }
+
+  .comet-runtime-grid {
+    gap: 8px 10px;
+    padding: 14px 20px 12px;
+  }
+
+  .comet-runtime-item {
+    min-height: 52px;
+  }
+
+  .comet-knowledge-footer,
+  .comet-runtime-footer {
+    min-height: 48px;
+  }
+}
+
+@media (min-width: 1700px) {
+  .comet-hero {
+    min-height: 232px;
+  }
+
+  .comet-hero__art {
+    width: min(45%, 760px);
+    max-height: 276px;
   }
 }
