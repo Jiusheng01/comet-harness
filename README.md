@@ -1,13 +1,18 @@
-# Comet（彗记）— 个人 AI 知识库与记忆助手
+# Comet（彗记）— Agent Harness / Runtime × 个人 AI 知识库与记忆助手
 
-> Personal AI Knowledge & Memory Assistant
+> Agent Harness / Runtime · Personal AI Knowledge & Memory Assistant
 
 Comet 是一个多用户的个人 AI 知识库 + 记忆助手：把你的文档、图片、网页沉淀成可语义检索的知识库，从对话中自动萃取「记忆」构建你的专属知识图谱，并用 LLM Agent 自主编排「知识库 / 记忆 / 联网」三类工具来回答问题。
+
+> **`feature/harness` 当前重点：**在原有产品能力之上，将 Agent 执行控制重构为项目自身维护的 **Agent Harness / Runtime**，掌握 Function Calling / ReAct 多轮循环、统一 Tool Runtime、Context Budget、Checkpoint / Resume、进程崩溃恢复与执行 Trace。
+
+> **项目来源：**本仓库基于公开项目 [lm041520/Comet](https://github.com/lm041520/Comet) 继续演进；原有 RAG、Memory、搜索、深度研究等能力予以保留，`feature/harness` 重点展示 Agent execution infrastructure 方向的重构与增强。
 
 ---
 
 ## 目录
 
+- [Agent Harness / Runtime](#agent-harness--runtime)
 - [核心功能](#核心功能)
 - [技术栈](#技术栈)
 - [系统架构](#系统架构)
@@ -19,6 +24,7 @@ Comet 是一个多用户的个人 AI 知识库 + 记忆助手：把你的文档�
   - [第 4 步：启动 Celery worker / beat](#第-4-步启动-celery-worker--beat)
   - [第 5 步：启动前端](#第-5-步启动前端)
   - [第 6 步：注册账号并配置模型](#第-6-步注册账号并配置模型)
+- [日常启动与关闭](#日常启动与关闭)
 - [首次使用流程](#首次使用流程)
 - [常见问题](#常见问题)
 - [目录结构](#目录结构)
@@ -26,13 +32,110 @@ Comet 是一个多用户的个人 AI 知识库 + 记忆助手：把你的文档�
 
 ---
 
+## Agent Harness / Runtime
+
+`feature/harness` 将 Agent 的执行控制从框架内部抽离出来，形成由项目自身维护的 **Agent Harness / Runtime**。
+
+LangChain 仍用于模型与工具生态适配，但 Function Calling / ReAct 的多轮执行、Tool Runtime、Context Budget、Checkpoint / Resume 和进程级 Recovery 已进入 Harness 自身。
+
+```mermaid
+flowchart TB
+    Request["Chat / API Request"] --> ChatService["ChatService"]
+    ChatService --> Orchestrator["Agent Orchestrator"]
+
+    Orchestrator -->|"Function Calling"| AgentRuntime["AgentRuntime"]
+    Orchestrator -->|"Weak-model fallback"| ReactRuntime["ReactRuntime"]
+
+    AgentRuntime --> Adapter["ModelAdapter"]
+    ReactRuntime --> Adapter
+
+    AgentRuntime --> Context["ContextManager"]
+    ReactRuntime --> Context
+
+    AgentRuntime --> Executor["ToolExecutor"]
+    ReactRuntime --> Executor
+
+    Executor --> Builtin["RAG / Memory / Web / Datetime"]
+    Executor --> MCP["MCP Tools"]
+
+    AgentRuntime --> Checkpoint["CheckpointStore"]
+    ReactRuntime --> Checkpoint
+    Checkpoint --> PostgreSQL[("PostgreSQL\nHarness Checkpoints")]
+
+    Recovery["CheckpointRecoveryWorker"] --> PostgreSQL
+    Recovery --> Redis["Redis\nExecution Lease + Conversation Lock"]
+    Recovery --> ChatService
+
+    Trace["Trace / Span"] -. observe .-> AgentRuntime
+    Trace -. observe .-> ReactRuntime
+    Trace -. observe .-> Executor
+```
+
+### Harness 当前能力
+
+| 能力 | 当前实现 |
+|---|---|
+| **Agent Runtime** | `AgentRuntime` 自主管理原生 Function Calling 多轮循环 |
+| **ReAct Runtime** | `ReactRuntime` 解析 Action / Observation，作为弱模型降级路径 |
+| **Model Boundary** | 统一 `ModelAdapter`，Runtime 不直接绑定 LangChain Message |
+| **Tool Runtime** | Function Calling / ReAct 共用 `ToolExecutor` |
+| **Context Management** | Token Budget、Compaction、Tool Call / Result 原子块保护 |
+| **Durable State** | `CheckpointStore` Protocol + PostgreSQL 持久化 |
+| **Resume** | 从 Harness Messages + `next_iteration` 恢复执行 |
+| **Crash Recovery** | Redis execution lease + strict conversation lock + Recovery Worker |
+| **Durable ACK** | assistant 业务结果 COMMIT 后才 ACK / 删除 checkpoint |
+| **Observability** | LLM、Tool、Context 的 Trace / Span 与执行轨迹 |
+
+### Durable Execution
+
+正常完成时，Checkpoint 并不是在 Runtime 返回的一瞬间删除，而是等待最终业务结果真正持久化：
+
+```text
+Runtime completion
+        ↓
+checkpoint retained
+        ↓
+assistant durable commit
+        ↓
+business ACK
+        ↓
+checkpoint delete
+```
+
+API 进程硬崩溃时：
+
+```text
+checkpoint survives in PostgreSQL
+        ↓
+old execution lease expires
+        ↓
+new API process scans checkpoint
+        ↓
+strict conversation lock
+        ↓
+Runtime.resume()
+        ↓
+assistant durable commit
+        ↓
+checkpoint ACK
+```
+
+仓库中的跨进程 Recovery E2E 会启动新的 Python/API 进程验证这条链路，并检查已经进入持久化 checkpoint 的完整工具批次不会在恢复后再次执行。
+
+> 当前不宣称 generic exactly-once tool execution。若进程恰好在「外部工具副作用成功、但 Tool Result / Checkpoint 尚未持久化」的窗口崩溃，仍需要后续 Tool Execution Journal + idempotency policy 进一步处理。
+
+详细设计、恢复边界与测试说明见：**[`docs/HARNESS_ARCHITECTURE.md`](docs/HARNESS_ARCHITECTURE.md)**。
+
+---
+
 ## 核心功能
 
+- **Agent Harness / Runtime**：Function Calling / ReAct 双运行时统一进入自研 Tool Runtime；支持 Token Budget / Context Compaction、PostgreSQL Checkpoint / Resume、Redis execution lease + conversation lock 的进程崩溃自动恢复，以及全链路 Trace。
 - **知识库 RAG**：文档（PDF/Word/Markdown/TXT/HTML）、网页、图片入库；父子分块 + IK 中文分词；ES 向量 + BM25 混合检索（可选 Rerank）；带引用溯源。
 - **图片多模态**：图片自动生成描述 / OCR / 物体 / 场景，并可语义检索。
 - **AI 自动打标签**：入库内容自动分类，复用已有标签防膨胀。
 - **记忆系统**：从「主动记住」或对话中异步萃取三元组，写入 Neo4j 四层溯源图谱（来源→片段→陈述→实体）；区分画像类实体与事件类（带时间，进时间线）；两层去重；社区聚类。
-- **智能问答**：知识库 / 记忆 / 联网三个工具做成 LangChain Agent，LLM 自主编排（强模型走原生 function calling，弱模型走 ReAct 降级）；SSE 流式输出；带引用与工具调用标记；支持多模态看图问答。
+- **智能问答**：知识库 / 记忆 / 联网统一作为 Harness Tool，由 Runtime 自主驱动（强模型走原生 Function Calling，弱模型走 ReAct 降级）；SSE 流式输出；带引用与工具调用标记；支持多模态看图问答。
 - **搜索与导航**：全局搜索（文档 + 图片 + 记忆三排并列，语义相关度门控）、收藏夹、标签管理、每日回顾。
 - **可视化**：知识图谱（AntV X6）、事件时间线、统计仪表盘（ECharts）。
 - **情绪与音乐（v0.0.2）**：对话情绪分析（valence-arousal）、记忆深化分层与定时巩固、按「情绪 + 偏好」打分的情绪化音乐推荐 + 沉浸式播放器。
@@ -59,7 +162,7 @@ Comet 是一个多用户的个人 AI 知识库 + 记忆助手：把你的文档�
 | 向量/全文 | Elasticsearch 8.17（向量 + BM25 + IK 中文分词） |
 | 记忆图谱 | Neo4j 5.26（实体-关系-事件三元组） |
 | 异步/缓存 | Celery + Redis（多队列：parse / memory / beat / research） |
-| LLM 编排 | LangChain（Agent 工具循环，方案B） |
+| Agent Runtime | 自研 Harness Runtime（Function Calling / ReAct）+ LangChain Model / Tool Adapter |
 
 ---
 
@@ -113,8 +216,8 @@ Comet 是一个多用户的个人 AI 知识库 + 记忆助手：把你的文档�
 ### 第 1 步：克隆代码
 
 ```bash
-git clone git@github.com:lm041520/Comet.git
-cd Comet
+git clone https://github.com/Jiusheng01/haeness.git
+cd haeness
 ```
 
 ### 第 2 步：启动四个存储（Docker）
@@ -160,10 +263,11 @@ docker compose up -d postgres elasticsearch neo4j redis
 - **TLS handshake timeout / 镜像拉取慢**：配置上面的镜像加速器
 - **容器名称冲突**：如果之前启动过，先清理旧容器 `docker rm -f comet-postgres comet-es comet-neo4j comet-redis`
 
-> Elasticsearch 镜像是自定义构建的（内置 IK 中文分词插件，见 `docker/es/Dockerfile`），首次构建需要几分钟。
+> Elasticsearch 镜像是自定义构建的（内置 IK 分词插件，见 `docker/es/Dockerfile`），首次构建需要几分钟。
 > Neo4j 镜像较大（约 500-700MB），首次下载需要时间，请耐心等待。
 > 等容器健康后再继续。可用 `docker compose ps` 查看状态，所有服务都应显示 `(healthy)` 或 `Up`。
 
+### 第 3 步：配置并启动后端
 
 ```bash
 cd api
@@ -180,6 +284,7 @@ JWT_SECRET=请改成一段随机长字符串
 ```
 
 生成 `JWT_SECRET`：
+
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
@@ -190,6 +295,7 @@ FERNET_KEY=请填生成的-Fernet-Key
 ```
 
 生成 `FERNET_KEY`：
+
 ```bash
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
@@ -263,14 +369,14 @@ npm run dev
 2. 进入 **设置 → 模型配置**，按以下顺序配置模型：
 
    **必需配置（至少需要）：**
-   
+
    - **对话模型**（type=chat）
      - 推荐：DeepSeek
      - 模型名称：`deepseek-chat`
      - Base URL：`https://api.deepseek.com/v1`
      - API Key：在 https://platform.deepseek.com/ 注册获取
      - 能力选项：强模型建议勾上 `function_call`，问答时走原生工具调用
-   
+
    - **Embedding 模型**（type=embedding）
      - 推荐：智谱 AI
      - 模型名称：`embedding-3`
@@ -279,9 +385,9 @@ npm run dev
      - 说明：维度固定 1024，与 `EMBEDDING_DIMS` 配置一致
 
    **可选配置（增强功能）：**
-   
+
    - **联网搜索模型**（type=websearch）- AI 可实时搜索网络信息
-     
+
      选项 1：Tavily（国际通用，推荐）
      - Provider：`tavily`
      - 模型名称：随便填（如 `tavily-search`）
@@ -294,7 +400,7 @@ npm run dev
      - 模型名称：随便填（如 `qianfan-search`）
      - Base URL：`https://qianfan.baidubce.com/v2/ai_search/chat/completions`
      - API Key：在百度智能云千帆平台获取 Access Token
-     
+
    - **多模态模型**（type=multimodal）- 支持图片问答
    - **Rerank 模型**（type=rerank）- 提升检索精度
 
@@ -389,8 +495,8 @@ docker compose down -v
 
 ## 目录结构
 
-```
-Comet/
+```text
+haeness/
 ├── api/                      # 后端 FastAPI
 │   ├── app/
 │   │   ├── controllers/      # 路由层
@@ -401,7 +507,8 @@ Comet/
 │   │   ├── core/             # 横切基础设施
 │   │   │   ├── rag/          #   知识库检索（分块/解析/索引/混合检索）
 │   │   │   ├── memory/       #   记忆（预处理/萃取/检索/聚类 + prompts）
-│   │   │   ├── agent/        #   Agent 工具编排（方案B）
+│   │   │   ├── agent/        #   Tool registry / Prompt / Agent 兼容编排入口
+│   │   │   ├── harness/      #   Agent Runtime / Context / Checkpoint / Tools / Recovery
 │   │   │   ├── llm/          #   LLM 客户端与工厂
 │   │   │   └── storage/      #   文件存储（本地/OSS）
 │   │   ├── tasks/            # Celery 异步任务
@@ -410,8 +517,11 @@ Comet/
 │   │   ├── main.py           # FastAPI 入口
 │   │   └── celery_app.py     # Celery 多队列配置
 │   ├── migrations/           # Alembic 迁移
+│   ├── tests/                # Harness / 业务手工回归与 E2E 检查
 │   ├── run.py                # 本地启动入口
 │   └── pyproject.toml        # 依赖（uv 管理）
+├── docs/
+│   └── HARNESS_ARCHITECTURE.md  # Harness 架构与恢复语义
 ├── web/                      # 前端 React + TS + AntD
 │   └── src/
 │       ├── api/              # 请求封装（client + 各模块）
