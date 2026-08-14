@@ -99,10 +99,8 @@ const CAP_LABEL: Record<string, string> = {
   vision: '图片理解',
 }
 
-// 密钥掩码归一化：统一显示为「固定圆点 + 真实尾部」，避免长短不一撑乱卡片
 function normalizeKey(masked: string): string {
   if (!masked) return '-'
-  // 取末尾连续的非掩码字符作为可见尾部（后端掩码用 * 号）
   const tail = masked.replace(/\*+/g, '').slice(-4)
   return `${'•'.repeat(12)}${tail}`
 }
@@ -195,7 +193,6 @@ export default function ModelConfigPage() {
     }
   }
 
-  // 按类型分组,每组单独成区,支持顶部锚点跳转
   const grouped = useMemo(() => {
     const map = new Map<ModelType, ModelConfigItem[]>()
     TYPE_ORDER.forEach((t) => map.set(t, []))
@@ -203,7 +200,6 @@ export default function ModelConfigPage() {
       const arr = map.get(it.type)
       if (arr) arr.push(it)
     })
-    // 同组内默认配置在前,其余按名称排序保持稳定
     map.forEach((arr) => {
       arr.sort((a, b) => {
         if (a.is_default && !b.is_default) return -1
@@ -224,10 +220,7 @@ export default function ModelConfigPage() {
       <div key={item.id} className="model-card">
         <div className="model-card-glow" style={{ background: meta.gradient }} />
         <div className="model-card-head">
-          <div
-            className="model-card-icon"
-            style={{ background: meta.gradient }}
-          >
+          <div className="model-card-icon" style={{ background: meta.gradient }}>
             <ApiOutlined />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -280,11 +273,7 @@ export default function ModelConfigPage() {
               <span className="model-card-label">能力</span>
               <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                 {item.capability.map((c) => (
-                  <Tag
-                    key={c}
-                    color="green"
-                    style={{ margin: 0, borderRadius: 6 }}
-                  >
+                  <Tag key={c} color="green" style={{ margin: 0, borderRadius: 6 }}>
                     {CAP_LABEL[c] ?? c}
                   </Tag>
                 ))}
@@ -313,18 +302,10 @@ export default function ModelConfigPage() {
               设默认
             </Button>
           )}
-          <Button
-            size="small"
-            type="text"
-            icon={<EditOutlined />}
-            onClick={() => openEdit(item)}
-          >
+          <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEdit(item)}>
             编辑
           </Button>
-          <Popconfirm
-            title="确定删除该配置？"
-            onConfirm={() => onDelete(item.id)}
-          >
+          <Popconfirm title="确定删除该配置？" onConfirm={() => onDelete(item.id)}>
             <Button size="small" type="text" danger icon={<DeleteOutlined />}>
               删除
             </Button>
@@ -335,7 +316,7 @@ export default function ModelConfigPage() {
   }
 
   return (
-    <div className="fluid-page" style={{ maxWidth: '80rem' }}>
+    <div className="fluid-page">
       <div className="model-page-header">
         <div>
           <Typography.Title level={3} style={{ margin: 0 }}>
@@ -345,12 +326,7 @@ export default function ModelConfigPage() {
             管理对话、多模态、向量、重排与联网搜索模型，密钥加密存储
           </Typography.Text>
         </div>
-        <Button
-          type="primary"
-          size="large"
-          icon={<PlusOutlined />}
-          onClick={openCreate}
-        >
+        <Button type="primary" size="large" icon={<PlusOutlined />} onClick={openCreate}>
           新增配置
         </Button>
       </div>
@@ -426,13 +402,7 @@ export default function ModelConfigPage() {
                 </Typography.Text>
                 <div className="provider-link-grid">
                   {PROVIDER_LINKS.map((p) => (
-                    <a
-                      key={p.label}
-                      className="provider-link"
-                      href={p.url}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
+                    <a key={p.label} className="provider-link" href={p.url} target="_blank" rel="noreferrer">
                       <div className="provider-link__head">
                         <LinkOutlined />
                         <span className="provider-link__name">{p.label}</span>
@@ -452,13 +422,9 @@ export default function ModelConfigPage() {
 
       <Spin spinning={loading}>
         {grouped.length === 0 && !loading ? (
-          <Empty
-            style={{ padding: '60px 0' }}
-            description="还没有模型配置,点击右上角新增一个"
-          />
+          <Empty style={{ padding: '60px 0' }} description="还没有模型配置,点击右上角新增一个" />
         ) : (
           <div>
-            {/* 顶部分类快捷锚点 */}
             {grouped.length > 1 && (
               <div
                 style={{
@@ -475,10 +441,7 @@ export default function ModelConfigPage() {
                   zIndex: 10,
                 }}
               >
-                <Typography.Text
-                  type="secondary"
-                  style={{ fontSize: 12.5, marginRight: 6, alignSelf: 'center' }}
-                >
+                <Typography.Text type="secondary" style={{ fontSize: 12.5, marginRight: 6, alignSelf: 'center' }}>
                   快速跳转
                 </Typography.Text>
                 {grouped.map((g) => {
@@ -489,9 +452,7 @@ export default function ModelConfigPage() {
                       href={`#type-${g.type}`}
                       onClick={(e) => {
                         e.preventDefault()
-                        document
-                          .getElementById(`type-${g.type}`)
-                          ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                        document.getElementById(`type-${g.type}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
                       }}
                       style={{
                         display: 'inline-flex',
@@ -545,19 +506,14 @@ export default function ModelConfigPage() {
               </div>
             )}
 
-            {/* 分组列表 */}
             {grouped.map((g, gi) => {
               const meta = TYPE_META[g.type]
               return (
                 <section
                   key={g.type}
                   id={`type-${g.type}`}
-                  style={{
-                    scrollMarginTop: 70,
-                    marginTop: gi === 0 ? 0 : 28,
-                  }}
+                  style={{ scrollMarginTop: 70, marginTop: gi === 0 ? 0 : 28 }}
                 >
-                  {/* 分组头 */}
                   <div
                     style={{
                       display: 'flex',
@@ -568,18 +524,8 @@ export default function ModelConfigPage() {
                       borderBottom: `1px solid ${meta.color}1f`,
                     }}
                   >
-                    <span
-                      style={{
-                        width: 4,
-                        height: 18,
-                        borderRadius: 2,
-                        background: meta.gradient,
-                      }}
-                    />
-                    <Typography.Text
-                      strong
-                      style={{ fontSize: 15.5, color: '#171719' }}
-                    >
+                    <span style={{ width: 4, height: 18, borderRadius: 2, background: meta.gradient }} />
+                    <Typography.Text strong style={{ fontSize: 15.5, color: '#171719' }}>
                       {TYPE_LABEL[g.type]}
                     </Typography.Text>
                     <span
@@ -594,10 +540,7 @@ export default function ModelConfigPage() {
                     >
                       {g.items.length}
                     </span>
-                    <Typography.Text
-                      type="secondary"
-                      style={{ fontSize: 12.5, color: '#98A2B3' }}
-                    >
+                    <Typography.Text type="secondary" style={{ fontSize: 12.5, color: '#98A2B3' }}>
                       {meta.desc}
                     </Typography.Text>
                   </div>
