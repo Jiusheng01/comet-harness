@@ -384,11 +384,29 @@
 }
 
 .comet-task-card {
-  min-height: 170px;
+  min-height: 116px;
 }
 
 .comet-task-list {
-  padding: 0 12px 8px;
+  padding: 4px 12px 8px;
+}
+
+.comet-task-card .comet-empty {
+  min-height: 54px;
+}
+
+.comet-task-card .comet-empty--button {
+  justify-content: flex-start;
+  padding: 0 8px;
+  border-radius: 8px;
+  color: #8d90a3;
+  text-align: left;
+  transition: color 0.18s ease, background 0.18s ease;
+}
+
+.comet-task-card .comet-empty--button:hover {
+  color: #635bdb;
+  background: #fafaff;
 }
 
 .comet-task-item {
@@ -785,10 +803,4 @@
   .comet-task-item__next {
     display: none;
   }
-}
-
-/* 首页单独放宽：保留全局 .fluid-page 的 1200px 规则给其他页面，
-   这里只减少宽屏下两侧过大的空白。 */
-.comet-home.fluid-page {
-  max-width: 1480px;
 }
