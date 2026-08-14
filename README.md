@@ -125,19 +125,49 @@ cd Comet
 cp .env.example .env    # Windows: copy .env.example .env
 ```
 
+**重要：国内用户需先配置 Docker 镜像加速器**
+
+如果遇到镜像拉取超时（TLS handshake timeout），需要配置镜像加速：
+
+1. 打开 Docker Desktop → Settings → Docker Engine
+2. 在 JSON 配置中添加 `registry-mirrors` 字段：
+
+```json
+{
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://docker.rainbond.cc",
+    "https://docker.nju.edu.cn"
+  ]
+}
+```
+
+3. 点击 "Apply & restart" 等待 Docker 重启
+
 只起四个存储容器（不起应用容器，应用本地跑）：
 
 ```bash
+# 第一步：先构建 Elasticsearch 镜像（必须先做，否则会报 comet-es-ik:8.17.0 不存在）
+docker compose build elasticsearch
+
+# 第二步：启动所有存储服务
 docker compose up -d postgres elasticsearch neo4j redis
 ```
 
-> Elasticsearch 镜像是自定义构建的（内置 IK 中文分词插件，见 `docker/es/Dockerfile`），首次会自动 build，需要几分钟。
-> 等容器健康后再继续。可用 `docker compose ps` 查看状态，ES 启动较慢（约 30~60 秒）。
+**常见问题：**
 
-### 第 3 步：配置并启动后端
+- **`comet-es-ik:8.17.0` 镜像不存在**：这是自定义镜像，必须先执行 `docker compose build elasticsearch` 构建
+- **TLS handshake timeout / 镜像拉取慢**：配置上面的镜像加速器
+- **容器名称冲突**：如果之前启动过，先清理旧容器 `docker rm -f comet-postgres comet-es comet-neo4j comet-redis`
+
+> Elasticsearch 镜像是自定义构建的（内置 IK 中文分词插件，见 `docker/es/Dockerfile`），首次构建需要几分钟。
+> Neo4j 镜像较大（约 500-700MB），首次下载需要时间，请耐心等待。
+> 等容器健康后再继续。可用 `docker compose ps` 查看状态，所有服务都应显示 `(healthy)` 或 `Up`。
+
 
 ```bash
 cd api
+uv python install 3.12
 uv sync                       # 安装依赖（自动建 .venv）
 cp .env.example .env          # Windows: copy .env.example .env
 ```
@@ -147,15 +177,21 @@ cp .env.example .env          # Windows: copy .env.example .env
 ```dotenv
 # JWT 签名密钥，随便一段长随机字符串
 JWT_SECRET=请改成一段随机长字符串
+```
 
+生成 `JWT_SECRET`：
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+```dotenv
 # API Key 加密密钥（Fernet），用下面命令生成一串填进来
 FERNET_KEY=请填生成的-Fernet-Key
 ```
 
 生成 `FERNET_KEY`：
-
 ```bash
-uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
 其余存储地址默认指向 `localhost`，与第 2 步的容器端口一致，无需改动。
@@ -174,10 +210,19 @@ uv run python run.py
 
 验证：浏览器或 curl 访问
 
-- `http://localhost:8000/api/hello` → 返回欢迎信息
-- `http://localhost:8000/api/health` → 四个存储应全部 `ok`
+```bash
+# 测试基本连接
+curl http://localhost:8000/api/hello
 
-> 后端启动时会自动初始化 ES 索引和 Neo4j 图谱约束/索引，无需手动操作。
+# 测试四个存储的健康状态
+curl http://localhost:8000/api/health
+```
+
+预期结果：
+- `/api/hello` → 返回欢迎信息
+- `/api/health` → 四个存储应全部 `ok`
+
+> 后端启动时会自动初始化 ES 索引和 Neo4j 图谱约束/索引，首次启动可能需要 1-2 分钟（Elasticsearch 和 Neo4j 连接可能会超时重试几次，这是正常的）。等看到 `Application startup complete.` 后即可访问。
 
 ### 第 4 步：启动 Celery worker / beat
 
@@ -185,6 +230,7 @@ uv run python run.py
 
 ```bash
 # Windows 必须用 --pool=solo（prefork 在 Windows 有权限问题）
+cd api
 uv run celery -A app.celery_app.celery_app worker -l info -Q default,parse,memory,beat,research --pool=solo
 ```
 
@@ -194,6 +240,7 @@ uv run celery -A app.celery_app.celery_app worker -l info -Q default,parse,memor
 定时任务（每日回顾、定时全量聚类）需要 beat，**再开一个终端**（可选，不影响主流程）：
 
 ```bash
+cd api
 uv run celery -A app.celery_app.celery_app beat -l info
 ```
 
@@ -211,14 +258,101 @@ npm run dev
 
 ### 第 6 步：注册账号并配置模型
 
-1. 打开前端，点「注册」创建账号，登录。
-2. 进入 **设置 → 模型配置**，至少添加两个模型：
-   - **对话模型**（type=chat）：如 DeepSeek `deepseek-chat`，填 base_url、API Key。强模型建议勾上 `function_call` 能力，问答时走原生工具调用。
-   - **Embedding 模型**（type=embedding）：如 智谱 `embedding-3`（维度固定 1024，与 `EMBEDDING_DIMS` 一致）。
-   - 可选：多模态模型（看图问答）、Rerank 模型、联网搜索（type=websearch，provider 选千帆/tavily）。
+1. 打开前端（http://localhost:5173），点「注册」创建账号，登录。
+
+2. 进入 **设置 → 模型配置**，按以下顺序配置模型：
+
+   **必需配置（至少需要）：**
+   
+   - **对话模型**（type=chat）
+     - 推荐：DeepSeek
+     - 模型名称：`deepseek-chat`
+     - Base URL：`https://api.deepseek.com/v1`
+     - API Key：在 https://platform.deepseek.com/ 注册获取
+     - 能力选项：强模型建议勾上 `function_call`，问答时走原生工具调用
+   
+   - **Embedding 模型**（type=embedding）
+     - 推荐：智谱 AI
+     - 模型名称：`embedding-3`
+     - Base URL：`https://open.bigmodel.cn/api/paas/v4`
+     - API Key：在 https://open.bigmodel.cn/ 注册获取
+     - 说明：维度固定 1024，与 `EMBEDDING_DIMS` 配置一致
+
+   **可选配置（增强功能）：**
+   
+   - **联网搜索模型**（type=websearch）- AI 可实时搜索网络信息
+     
+     选项 1：Tavily（国际通用，推荐）
+     - Provider：`tavily`
+     - 模型名称：随便填（如 `tavily-search`）
+     - Base URL：`https://api.tavily.com/search`
+     - API Key：在 https://tavily.com/ 注册获取
+     - 免费额度：每月 1000 次搜索
+
+     选项 2：百度千帆 AI 搜索（中文友好）
+     - Provider：`qianfan`
+     - 模型名称：随便填（如 `qianfan-search`）
+     - Base URL：`https://qianfan.baidubce.com/v2/ai_search/chat/completions`
+     - API Key：在百度智能云千帆平台获取 Access Token
+     
+   - **多模态模型**（type=multimodal）- 支持图片问答
+   - **Rerank 模型**（type=rerank）- 提升检索精度
+
 3. 每个模型添加后点「测试连接」，通过后「设为默认」。
 
 到这里就可以开始用了。
+
+---
+
+## 日常启动与关闭
+
+### 后续启动（日常开发）
+
+完成首次配置后，后续每次只需要 3-4 步：
+
+```bash
+# 1. 启动存储容器
+docker compose up -d postgres elasticsearch neo4j redis
+
+# 2. 启动后端（新终端 1）
+cd api
+uv run python run.py
+
+# 3. 启动 Celery worker（新终端 2）
+cd api
+uv run celery -A app.celery_app.celery_app worker -l info -Q default,parse,memory,beat,research --pool=solo
+
+# 4. 启动前端（新终端 3）
+cd web
+npm run dev
+```
+
+**可选：** 如果需要定时任务功能（每日回顾、记忆巩固等），再开一个终端启动 Celery beat：
+
+```bash
+cd api
+uv run celery -A app.celery_app.celery_app beat -l info
+```
+
+### 关闭服务
+
+```bash
+# 停止 Docker 容器（保留数据）
+docker compose stop
+
+# 其他服务：在对应终端按 Ctrl+C 停止
+# - 后端服务
+# - Celery worker
+# - Celery beat（如果启动了）
+# - 前端服务
+```
+
+**完全清理（慎用！会删除所有数据）：**
+
+```bash
+# 删除容器和数据卷
+docker compose down -v
+```
 
 ---
 
