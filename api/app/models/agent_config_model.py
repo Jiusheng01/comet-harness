@@ -1,13 +1,16 @@
 """Agent runtime/context behavior configuration.
 
 Persona owns presentation concerns such as system prompt and temperature.
-AgentConfig only keeps cross-cutting runtime/context toggles that affect how
-conversation context is assembled and rendered.
+AgentConfig only exposes cross-cutting runtime/context toggles.
+
+The database still contains several legacy NOT NULL columns created by the
+original Comet schema. They remain privately mapped here so inserts stay
+compatible without coupling runtime configuration back to persona/tool UI.
 """
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,6 +29,25 @@ class AgentConfig(Base):
         unique=True,
         index=True,
     )
+
+    # Legacy database compatibility only. These columns are intentionally not
+    # exposed by AgentConfigService; persona/tool configuration owns them now.
+    _legacy_system_prompt: Mapped[str] = mapped_column(
+        "system_prompt", Text, default=""
+    )
+    _legacy_temperature: Mapped[float] = mapped_column(
+        "temperature", Float, default=0.7
+    )
+    _legacy_enable_knowledge: Mapped[bool] = mapped_column(
+        "enable_knowledge", Boolean, default=True
+    )
+    _legacy_enable_memory: Mapped[bool] = mapped_column(
+        "enable_memory", Boolean, default=True
+    )
+    _legacy_enable_web_search: Mapped[bool] = mapped_column(
+        "enable_web_search", Boolean, default=False
+    )
+
     # Active memory recall: inject relevant long-term memory into the turn.
     enable_active_recall: Mapped[bool] = mapped_column(Boolean, default=True)
     # Cross-session context: include recent context from other conversations.
