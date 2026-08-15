@@ -16,7 +16,6 @@ from app.models import (  # noqa: F401
     conversation_share_model,
     daily_review_model,
     document_model,
-    emotion_model,
     favorite_model,
     harness_checkpoint_model,
     image_model,

@@ -20,7 +20,6 @@ celery_app = Celery(
         "app.tasks.parse",
         "app.tasks.image",
         "app.tasks.memory",
-        "app.tasks.emotion",
         "app.tasks.beat",
         "app.tasks.agent_task",
     ],
@@ -38,33 +37,30 @@ celery_app.conf.update(
         "app.tasks.parse.*": {"queue": "parse"},
         "app.tasks.image.*": {"queue": "parse"},
         "app.tasks.memory.*": {"queue": "memory"},
-        "app.tasks.emotion.*": {"queue": "memory"},
         "app.tasks.beat.*": {"queue": "beat"},
-        # 调度心跳留 beat 队列（轻量）；研究执行进独立 research 队列，避免长任务堵死心跳
         "app.tasks.agent_task.heartbeat": {"queue": "beat"},
         "app.tasks.agent_task.run": {"queue": "research"},
     },
-    # Celery beat 定时
     beat_schedule={
         "agent-task-heartbeat": {
             "task": "app.tasks.agent_task.heartbeat",
-            "schedule": crontab(minute="*"),  # 每分钟扫定时任务表
+            "schedule": crontab(minute="*"),
         },
         "daily-review": {
             "task": "app.tasks.beat.generate_daily_reviews",
-            "schedule": crontab(hour=22, minute=0),  # 每天 22:00 生成回顾
+            "schedule": crontab(hour=22, minute=0),
         },
         "cluster-communities": {
             "task": "app.tasks.beat.cluster_communities",
-            "schedule": crontab(hour=3, minute=0),  # 每天凌晨 3:00 全量聚类兜底
+            "schedule": crontab(hour=3, minute=0),
         },
         "consolidate-memory": {
             "task": "app.tasks.beat.consolidate_memory",
-            "schedule": crontab(hour=4, minute=0),  # 每天凌晨 4:00 记忆巩固
+            "schedule": crontab(hour=4, minute=0),
         },
         "reflect-memory": {
             "task": "app.tasks.beat.reflect_memory",
-            "schedule": crontab(hour=4, minute=30),  # 每天凌晨 4:30 反思（巩固之后）
+            "schedule": crontab(hour=4, minute=30),
         },
     },
 )
