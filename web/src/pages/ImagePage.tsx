@@ -23,12 +23,10 @@ import {
   type ImageItem,
   type ImageSearchHit,
 } from '@/api/images'
-import { favoriteApi } from '@/api/favorites'
 import {
   AuthenticatedAntdImage,
   AuthenticatedImage,
 } from '@/components/AuthenticatedImage'
-import FavoriteButton from '@/components/FavoriteButton'
 import TagFilterBar from '@/components/TagFilterBar'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBaseStore'
 import { groupByDate } from './knowledge/helpers'
@@ -48,14 +46,10 @@ function ImageCard({
   img,
   onClick,
   onDelete,
-  favId,
-  onFavChange,
 }: {
   img: ImageItem
   onClick: () => void
   onDelete: (id: string) => void
-  favId?: string | null
-  onFavChange?: (id: string, favId: string | null) => void
 }) {
   return (
     <Card
@@ -109,15 +103,6 @@ function ImageCard({
           <DeleteOutlined style={{ color: '#FF5D34' }} />
         </Popconfirm>
       </div>
-      <div style={{ marginTop: 4, textAlign: 'right' }}>
-        <FavoriteButton
-          targetType="image"
-          targetId={img.id}
-          initialFavId={favId ?? null}
-          snapshot={{ title: img.file_name, summary: img.description || '', url: img.url }}
-          onChange={onFavChange}
-        />
-      </div>
     </Card>
   )
 }
@@ -130,7 +115,6 @@ export default function ImagePage() {
   const [activeTag, setActiveTag] = useState<string>()
   const [activeKb, setActiveKb] = useState<string>()
   const [detail, setDetail] = useState<ImageItem | null>(null)
-  const [favMap, setFavMap] = useState<Record<string, string>>({})
   const [searching, setSearching] = useState(false)
   const [hits, setHits] = useState<(ImageSearchHit & { img?: ImageItem })[] | null>(null)
   const [uploading, setUploading] = useState(false)
@@ -141,40 +125,17 @@ export default function ImagePage() {
     ensureKbLoaded()
   }, [ensureKbLoaded])
 
-  const loadFavorites = async () => {
-    try {
-      const { data } = await favoriteApi.list('image')
-      const map: Record<string, string> = {}
-      data.forEach((f) => {
-        map[f.target_id] = f.id
-      })
-      setFavMap(map)
-    } catch {
-      // 收藏态加载失败不影响主流程
-    }
-  }
-
   const load = useCallback(async () => {
     setLoading(true)
     try {
       const { data } = await imageApi.list(1, 60, activeTag, activeKb)
       setList(data.items)
-      loadFavorites()
     } catch (e) {
       message.error((e as Error).message)
     } finally {
       setLoading(false)
     }
   }, [activeTag, activeKb])
-
-  const onFavChange = (id: string, favId: string | null) => {
-    setFavMap((prev) => {
-      const next = { ...prev }
-      if (favId) next[id] = favId
-      else delete next[id]
-      return next
-    })
-  }
 
   useEffect(() => {
     if (hits === null) load()
@@ -338,8 +299,6 @@ export default function ImagePage() {
                       img={img}
                       onClick={() => setDetail(img)}
                       onDelete={onDelete}
-                      favId={favMap[img.id] ?? null}
-                      onFavChange={onFavChange}
                     />
                   </Col>
                 ))}
@@ -349,8 +308,6 @@ export default function ImagePage() {
                 list={list}
                 onClick={setDetail}
                 onDelete={onDelete}
-                favMap={favMap}
-                onFavChange={onFavChange}
               />
             )}
           </>
@@ -401,14 +358,10 @@ function ImageTimeline({
   list,
   onClick,
   onDelete,
-  favMap,
-  onFavChange,
 }: {
   list: ImageItem[]
   onClick: (img: ImageItem) => void
   onDelete: (id: string) => void
-  favMap: Record<string, string>
-  onFavChange: (id: string, favId: string | null) => void
 }) {
   const groups = groupByDate(list)
   return (
@@ -446,8 +399,6 @@ function ImageTimeline({
                   img={img}
                   onClick={() => onClick(img)}
                   onDelete={onDelete}
-                  favId={favMap[img.id] ?? null}
-                  onFavChange={onFavChange}
                 />
               </Col>
             ))}
