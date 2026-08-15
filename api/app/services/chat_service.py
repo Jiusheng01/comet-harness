@@ -953,14 +953,6 @@ class ChatService:
                             body.image_keys,
                         )
 
-                    if not skip_user_message:
-                        svc._dispatch_emotion(
-                            user_id,
-                            user_text,
-                            conv_id,
-                            assistant_msg.id,
-                        )
-
                     # 先清缓冲，再广播 done。
                     await bus.clear_stream_buffer(
                         cid
@@ -1327,26 +1319,6 @@ class ChatService:
                     logger.warning("对话图片入库失败（跳过 %s）: %s", key, e)
         except Exception as e:
             logger.warning("对话图片入库整体失败（忽略）: %s", e)
-
-    def _dispatch_emotion(
-        self,
-        user_id: uuid.UUID,
-        user_text: str,
-        conversation_id: uuid.UUID,
-        message_id: uuid.UUID,
-    ) -> None:
-        """派发本轮用户发言的情绪分析任务（异步，仅入队）。失败不影响问答。"""
-        text = (user_text or "").strip()
-        if not text:
-            return
-        try:
-            from app.tasks.emotion import analyze_emotion_task
-
-            analyze_emotion_task.delay(
-                str(user_id), text, str(conversation_id), str(message_id)
-            )
-        except Exception as e:
-            logger.warning("情绪分析派发失败（忽略）: user=%s err=%s", user_id, e)
 
     # ── 消息反馈 / 重新生成 ──
 
