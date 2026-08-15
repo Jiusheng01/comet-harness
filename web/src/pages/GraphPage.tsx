@@ -1,43 +1,41 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Card, Empty, Input, Space, Spin, Tag, Typography, message } from 'antd'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { Button, Card, Empty, Input, Segmented, Space, Spin, Tag, Typography, message } from 'antd'
 import {
   AimOutlined,
   MergeCellsOutlined,
   ReloadOutlined,
 } from '@ant-design/icons'
 import ForceGraph2D, { type ForceGraphMethods } from 'react-force-graph-2d'
-import { memoryApi, type GraphData, type GraphNode } from '@/api/memories'
+import { memoryApi, type GraphData, type GraphEdge, type GraphNode } from '@/api/memories'
 
 const { Text, Paragraph } = Typography
 
-// 节点大类：颜色 + 中文名。实体/事件默认显示，溯源层（陈述/片段/对话）默认隐藏。
-const KIND_ORDER = ['Entity', 'Event', 'Statement', 'Chunk', 'Dialogue'] as const
-type Kind = (typeof KIND_ORDER)[number]
-const KIND_META: Record<string, { label: string; color: string }> = {
+type Kind = 'Entity' | 'Event' | 'Statement' | 'Chunk' | 'Dialogue'
+type GraphView = 'entity' | 'event' | 'provenance'
+
+const KIND_META: Record<Kind, { label: string; color: string }> = {
   Entity: { label: '实体', color: '#155EEF' },
-  Event: { label: '事件', color: '#FF8A34' },
-  Statement: { label: '陈述', color: '#52C41A' },
-  Chunk: { label: '片段', color: '#9254DE' },
+  Event: { label: '事件', color: '#FA8C16' },
+  Statement: { label: '陈述', color: '#7B61FF' },
+  Chunk: { label: '文本块', color: '#69B1FF' },
   Dialogue: { label: '对话', color: '#13A8A8' },
 }
-const REL_LABEL: Record<string, string> = {
-  HAS_CHUNK: '包含片段',
-  HAS_STATEMENT: '包含陈述',
-  MENTIONS: '提及',
-  RELATION: '关系',
-  INVOLVES: '涉及',
-}
-const DEFAULT_KINDS: Kind[] = ['Entity', 'Event']
-const SEED_NEIGHBORS = 1 // 初始焦点展开的跳数
 
-// react-force-graph 会就地给节点对象补 x/y/vx/vy/fx/fy，故用可变对象
+const REL_LABEL: Record<string, string> = {
+  RELATION: '语义关系',
+  INVOLVES: '涉及',
+  MENTIONS: '提及',
+  HAS_STATEMENT: '包含陈述',
+  HAS_CHUNK: '包含文本块',
+}
+
 interface FGNode extends GraphNode {
-  deg: number
   x?: number
   y?: number
   fx?: number
   fy?: number
 }
+
 interface FGLink {
   source: string | FGNode
   target: string | FGNode
@@ -46,90 +44,64 @@ interface FGLink {
   predicate_surface?: string
 }
 
-const lid = (x: string | FGNode): string => (typeof x === 'object' ? x.id : x)
+function kindOf(node: GraphNode): Kind {
+  const kind = node.kind as Kind | undefined
+  return kind && kind in KIND_META ? kind : 'Entity'
+}
 
-function kindOf(n: GraphNode): Kind {
-  return n.kind && KIND_META[n.kind] ? (n.kind as Kind) : 'Entity'
+function linkId(value: string | FGNode) {
+  return typeof value === 'string' ? value : value.id
 }
 
 function useIsMobile() {
-  const [m, setM] = useState(
+  const [mobile, setMobile] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches,
   )
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 768px)')
-    const h = (e: MediaQueryListEvent) => setM(e.matches)
-    mq.addEventListener('change', h)
-    return () => mq.removeEventListener('change', h)
+    const listener = (event: MediaQueryListEvent) => setMobile(event.matches)
+    mq.addEventListener('change', listener)
+    return () => mq.removeEventListener('change', listener)
   }, [])
-  return m
+  return mobile
+}
+
+function viewAllowsNode(view: GraphView, node: GraphNode) {
+  const kind = kindOf(node)
+  if (view === 'entity') return kind === 'Entity'
+  if (view === 'event') return kind === 'Entity' || kind === 'Event'
+  return true
+}
+
+function viewAllowsEdge(view: GraphView, edge: GraphEdge) {
+  if (view === 'entity') return edge.rel === 'RELATION'
+  if (view === 'event') return edge.rel === 'RELATION' || edge.rel === 'INVOLVES'
+  return true
 }
 
 export default function GraphPage() {
   const isMobile = useIsMobile()
   const [loading, setLoading] = useState(true)
   const [data, setData] = useState<GraphData | null>(null)
+  const [view, setView] = useState<GraphView>('entity')
   const [selected, setSelected] = useState<GraphNode | null>(null)
-  const [merging, setMerging] = useState(false)
+  const [shownIds, setShownIds] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
-  const [visibleKinds, setVisibleKinds] = useState<Set<string>>(() => new Set(DEFAULT_KINDS))
+  const [merging, setMerging] = useState(false)
 
-  // 当前“已展开”的节点集合（探索式：从焦点出发，点哪展开哪），用 id 集合驱动
-  const [shownIds, setShownIds] = useState<Set<string>>(() => new Set())
-  // 高亮（hover 聚焦邻居）
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const fgRef = useRef<ForceGraphMethods<FGNode, FGLink> | undefined>(undefined)
+  const [size, setSize] = useState({ w: 900, h: 520 })
   const highlightNodes = useRef<Set<string>>(new Set())
   const highlightLinks = useRef<Set<FGLink>>(new Set())
-  const [, forceTick] = useState(0)
-
-  const fgRef = useRef<ForceGraphMethods<FGNode, FGLink> | undefined>(undefined)
-  const wrapRef = useRef<HTMLDivElement>(null)
-  const [size, setSize] = useState({ w: 800, h: 560 })
-
-  // 全量数据派生：节点表、邻接表、度数、持久可变节点对象（保留物理位置）
-  const store = useMemo(() => {
-    const nodeMap = new Map<string, GraphNode>()
-    const adj = new Map<string, Set<string>>()
-    const degree = new Map<string, number>()
-    const fgNodes = new Map<string, FGNode>()
-    if (data) {
-      data.nodes.forEach((n) => {
-        nodeMap.set(n.id, n)
-        adj.set(n.id, new Set())
-        degree.set(n.id, 0)
-      })
-      data.edges.forEach((e) => {
-        if (!nodeMap.has(e.source) || !nodeMap.has(e.target)) return
-        adj.get(e.source)!.add(e.target)
-        adj.get(e.target)!.add(e.source)
-        degree.set(e.source, (degree.get(e.source) ?? 0) + 1)
-        degree.set(e.target, (degree.get(e.target) ?? 0) + 1)
-      })
-      data.nodes.forEach((n) =>
-        fgNodes.set(n.id, { ...n, deg: degree.get(n.id) ?? 0 }),
-      )
-    }
-    return { nodeMap, adj, degree, fgNodes }
-  }, [data])
-
-  // 容器尺寸自适应
-  useEffect(() => {
-    const el = wrapRef.current
-    if (!el) return
-    const update = () =>
-      setSize({ w: el.clientWidth || 800, h: el.clientHeight || 560 })
-    update()
-    const ro = new ResizeObserver(update)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [data])
+  const [, repaint] = useState(0)
 
   const load = useCallback((showLoading = true) => {
     if (showLoading) setLoading(true)
-    setSelected(null)
     memoryApi
       .graph()
       .then(({ data }) => setData(data))
-      .catch((e) => message.error((e as Error).message))
+      .catch((error) => message.error((error as Error).message))
       .finally(() => setLoading(false))
   }, [])
 
@@ -137,264 +109,304 @@ export default function GraphPage() {
     load()
   }, [load])
 
-  // 数据到位后选种子（含「用户/我」优先，否则度数最高的实体）+ 展开一跳作为初始焦点
   useEffect(() => {
-    if (!data || data.nodes.length === 0) {
+    const element = wrapRef.current
+    if (!element) return
+    const update = () => setSize({ w: element.clientWidth || 900, h: element.clientHeight || 520 })
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [data, view])
+
+  const store = useMemo(() => {
+    const nodeMap = new Map<string, GraphNode>()
+    const fgNodes = new Map<string, FGNode>()
+    data?.nodes.forEach((node) => {
+      nodeMap.set(node.id, node)
+      fgNodes.set(node.id, { ...node })
+    })
+    return { nodeMap, fgNodes }
+  }, [data])
+
+  const viewStore = useMemo(() => {
+    const eligible = new Set<string>()
+    const adj = new Map<string, Set<string>>()
+    const degree = new Map<string, number>()
+    const edges: GraphEdge[] = []
+
+    data?.nodes.forEach((node) => {
+      if (!viewAllowsNode(view, node)) return
+      eligible.add(node.id)
+      adj.set(node.id, new Set())
+      degree.set(node.id, 0)
+    })
+
+    data?.edges.forEach((edge) => {
+      if (!viewAllowsEdge(view, edge)) return
+      if (!eligible.has(edge.source) || !eligible.has(edge.target)) return
+      edges.push(edge)
+      adj.get(edge.source)?.add(edge.target)
+      adj.get(edge.target)?.add(edge.source)
+      degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1)
+      degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1)
+    })
+
+    return { eligible, adj, degree, edges }
+  }, [data, view])
+
+  const chooseSeed = useCallback(() => {
+    if (!data) return null
+    const nodes = data.nodes.filter((node) => viewStore.eligible.has(node.id))
+    if (!nodes.length) return null
+    const entities = nodes.filter((node) => kindOf(node) === 'Entity')
+    const pool = entities.length ? entities : nodes
+    return (
+      pool.find((node) => /用户|^我$|本人|自己/.test(node.name)) ??
+      pool.reduce((best, node) =>
+        (viewStore.degree.get(node.id) ?? 0) > (viewStore.degree.get(best.id) ?? 0) ? node : best,
+      )
+    )
+  }, [data, viewStore])
+
+  const resetFocus = useCallback(() => {
+    const seed = chooseSeed()
+    if (!seed) {
       setShownIds(new Set())
+      setSelected(null)
       return
     }
-    const entities = data.nodes.filter((n) => kindOf(n) === 'Entity')
-    const pool = entities.length ? entities : data.nodes
-    const seed =
-      pool.find((n) => /用户|^我$|本人|自己/.test(n.name)) ??
-      pool.reduce((a, b) =>
-        (store.degree.get(b.id) ?? 0) > (store.degree.get(a.id) ?? 0) ? b : a,
-      )
     const ids = new Set<string>([seed.id])
-    let frontier = [seed.id]
-    for (let hop = 0; hop < SEED_NEIGHBORS; hop++) {
-      const next: string[] = []
-      frontier.forEach((id) =>
-        store.adj.get(id)?.forEach((nb) => {
-          if (!ids.has(nb)) {
-            ids.add(nb)
-            next.push(nb)
-          }
-        }),
-      )
-      frontier = next
-    }
+    viewStore.adj.get(seed.id)?.forEach((id) => ids.add(id))
     setShownIds(ids)
-    // 居中
-    setTimeout(() => fgRef.current?.zoomToFit(500, 60), 400)
-  }, [data, store])
+    setSelected(seed)
+    setTimeout(() => fgRef.current?.zoomToFit(500, 70), 350)
+  }, [chooseSeed, viewStore])
 
-  const expand = useCallback(
-    (id: string) => {
-      setShownIds((prev) => {
-        const next = new Set(prev)
-        next.add(id)
-        store.adj.get(id)?.forEach((nb) => next.add(nb))
-        return next
-      })
-    },
-    [store],
-  )
+  useEffect(() => {
+    resetFocus()
+  }, [resetFocus])
 
-  // 喂给力导图的数据：复用 store.fgNodes 持久对象引用（保留位置，避免每次重排）
+  const expand = useCallback((id: string) => {
+    setShownIds((previous) => {
+      const next = new Set(previous)
+      next.add(id)
+      viewStore.adj.get(id)?.forEach((neighbor) => next.add(neighbor))
+      return next
+    })
+  }, [viewStore])
+
   const graphData = useMemo(() => {
     const nodes: FGNode[] = []
-    for (const id of shownIds) {
-      const fn = store.fgNodes.get(id)
-      if (fn && visibleKinds.has(kindOf(fn))) nodes.push(fn)
-    }
-    const visIds = new Set(nodes.map((n) => n.id))
-    const links: FGLink[] = []
-    data?.edges.forEach((e) => {
-      if (visIds.has(e.source) && visIds.has(e.target)) {
-        links.push({
-          source: e.source,
-          target: e.target,
-          rel: e.rel,
-          predicate: e.predicate,
-          predicate_surface: e.predicate_surface,
-        })
-      }
+    shownIds.forEach((id) => {
+      if (!viewStore.eligible.has(id)) return
+      const node = store.fgNodes.get(id)
+      if (node) nodes.push(node)
     })
+    const visible = new Set(nodes.map((node) => node.id))
+    const links: FGLink[] = viewStore.edges
+      .filter((edge) => visible.has(edge.source) && visible.has(edge.target))
+      .map((edge) => ({
+        source: edge.source,
+        target: edge.target,
+        rel: edge.rel,
+        predicate: edge.predicate,
+        predicate_surface: edge.predicate_surface,
+      }))
     return { nodes, links }
-  }, [shownIds, visibleKinds, store, data])
+  }, [shownIds, store, viewStore])
 
-  const maxDeg = useMemo(
-    () => Math.max(1, ...Array.from(store.degree.values())),
-    [store],
-  )
-
-  const nodeRadius = useCallback(
-    (n: FGNode) => {
-      const k = isMobile ? 1.5 : 1 // 手机端整体放大，便于点按
-      const kind = kindOf(n)
-      if (kind === 'Entity') {
-        const imp = typeof n.importance === 'number' ? n.importance : 0.5
-        return (Math.min(10, Math.max(3, 3 + (n.deg / maxDeg) * 6 + imp * 1.5))) * k
-      }
-      if (kind === 'Event') return 4.5 * k
-      return 3.5 * k
-    },
-    [maxDeg, isMobile],
-  )
-
-  // 配置力的强度：加大斥力 + 拉长连线，让节点散开不重叠
   useEffect(() => {
-    const fg = fgRef.current
-    if (!fg) return
-    const n = graphData.nodes.length
-    const charge = n > 60 ? -420 : n > 25 ? -320 : -240
-    fg.d3Force('charge')?.strength(charge)
-    fg.d3Force('link')?.distance(70)
-    fg.d3ReheatSimulation()
+    const graph = fgRef.current
+    if (!graph) return
+    const count = graphData.nodes.length
+    graph.d3Force('charge')?.strength(count > 50 ? -420 : count > 20 ? -320 : -240)
+    graph.d3Force('link')?.distance(view === 'provenance' ? 65 : 90)
+    graph.d3ReheatSimulation()
+  }, [graphData, view])
+
+  const maxDegree = useMemo(
+    () => Math.max(1, ...Array.from(viewStore.degree.values())),
+    [viewStore],
+  )
+
+  const nodeRadius = useCallback((node: FGNode) => {
+    const kind = kindOf(node)
+    const mobileScale = isMobile ? 1.35 : 1
+    if (kind === 'Entity') {
+      const degree = viewStore.degree.get(node.id) ?? 0
+      const importance = typeof node.importance === 'number' ? node.importance : 0.5
+      return Math.min(12, 5 + (degree / maxDegree) * 5 + importance * 2) * mobileScale
+    }
+    if (kind === 'Event') return 6 * mobileScale
+    if (kind === 'Statement') return 4.5 * mobileScale
+    return 3.8 * mobileScale
+  }, [isMobile, maxDegree, viewStore])
+
+  const onNodeHover = useCallback((node: FGNode | null) => {
+    highlightNodes.current.clear()
+    highlightLinks.current.clear()
+    if (node) {
+      highlightNodes.current.add(node.id)
+      graphData.links.forEach((link) => {
+        if (linkId(link.source) === node.id || linkId(link.target) === node.id) {
+          highlightLinks.current.add(link)
+          highlightNodes.current.add(linkId(link.source))
+          highlightNodes.current.add(linkId(link.target))
+        }
+      })
+    }
+    repaint((value) => value + 1)
   }, [graphData])
 
-  // hover 聚焦：高亮邻居 + 关联边，其余淡化
-  const onNodeHover = useCallback(
-    (node: FGNode | null) => {
-      const hn = highlightNodes.current
-      const hl = highlightLinks.current
-      hn.clear()
-      hl.clear()
-      if (node) {
-        hn.add(node.id)
-        graphData.links.forEach((l) => {
-          if (lid(l.source) === node.id || lid(l.target) === node.id) {
-            hl.add(l)
-            hn.add(lid(l.source))
-            hn.add(lid(l.target))
-          }
-        })
-      }
-      forceTick((t) => t + 1)
-    },
-    [graphData],
-  )
-
-  const onNodeClick = useCallback(
-    (node: FGNode) => {
-      // 只展开关联 + 出详情，不移动/居中视图（避免每次点击图都跳）
-      expand(node.id)
-      if (kindOf(node) === 'Entity') setSelected(node)
-    },
-    [expand],
-  )
+  const onNodeClick = useCallback((node: FGNode) => {
+    expand(node.id)
+    setSelected(store.nodeMap.get(node.id) ?? node)
+  }, [expand, store])
 
   const onNodeDragEnd = useCallback((node: FGNode) => {
-    // 拖完固定该节点（pin），方便手动整理布局
     node.fx = node.x
     node.fy = node.y
   }, [])
 
-  const doSearch = useCallback(
-    (q: string) => {
-      const kw = q.trim()
-      if (!kw || !data) return
-      const hit =
-        store.fgNodes.get(kw) ??
-        Array.from(store.fgNodes.values()).find((n) =>
-          n.name.toLowerCase().includes(kw.toLowerCase()),
-        )
-      if (!hit) {
-        message.info('没找到匹配的实体')
-        return
-      }
-      // 把命中点设为新焦点（它+一跳邻居），并居中
-      const ids = new Set<string>([hit.id])
-      store.adj.get(hit.id)?.forEach((nb) => ids.add(nb))
-      setShownIds((prev) => new Set([...prev, ...ids]))
-      setSelected(store.nodeMap.get(hit.id) ?? null)
-      setTimeout(() => {
-        if (hit.x != null && hit.y != null) fgRef.current?.centerAt(hit.x, hit.y, 600)
-        fgRef.current?.zoom(2.2, 600)
-      }, 300)
-    },
-    [data, store],
-  )
-
-  const presentKinds = useMemo<Kind[]>(() => {
-    if (!data) return []
-    const set = new Set<Kind>()
-    data.nodes.forEach((n) => set.add(kindOf(n)))
-    return KIND_ORDER.filter((k) => set.has(k))
-  }, [data])
-
-  const kindCount = useMemo(() => {
-    const m = new Map<Kind, number>()
-    data?.nodes.forEach((n) => m.set(kindOf(n), (m.get(kindOf(n)) ?? 0) + 1))
-    return m
-  }, [data])
-
-  const toggleKind = (k: Kind) =>
-    setVisibleKinds((prev) => {
-      const next = new Set(prev)
-      if (next.has(k)) next.delete(k)
-      else next.add(k)
-      return next
-    })
+  const doSearch = useCallback((query: string) => {
+    const keyword = query.trim().toLowerCase()
+    if (!keyword) return
+    const hit = Array.from(store.fgNodes.values()).find(
+      (node) => viewStore.eligible.has(node.id) && node.name.toLowerCase().includes(keyword),
+    )
+    if (!hit) {
+      message.info('当前视图没有找到匹配节点')
+      return
+    }
+    const ids = new Set<string>([hit.id])
+    viewStore.adj.get(hit.id)?.forEach((neighbor) => ids.add(neighbor))
+    setShownIds((previous) => new Set([...previous, ...ids]))
+    setSelected(store.nodeMap.get(hit.id) ?? hit)
+    setTimeout(() => {
+      if (hit.x != null && hit.y != null) fgRef.current?.centerAt(hit.x, hit.y, 500)
+      fgRef.current?.zoom(2.1, 500)
+    }, 250)
+  }, [store, viewStore])
 
   const onMergeDuplicates = async () => {
     setMerging(true)
     try {
       const { data } = await memoryApi.mergeDuplicates()
       message.success(`已合并 ${data.removed} 个重复实体`)
-      load()
-    } catch (e) {
-      message.error((e as Error).message)
+      load(false)
+    } catch (error) {
+      message.error((error as Error).message)
     } finally {
       setMerging(false)
     }
   }
 
-  const resetView = () => {
-    // 解除所有 pin，回到焦点视图
-    store.fgNodes.forEach((n) => {
-      n.fx = undefined
-      n.fy = undefined
+  const clearPinsAndReset = () => {
+    store.fgNodes.forEach((node) => {
+      node.fx = undefined
+      node.fy = undefined
     })
-    load()
+    resetFocus()
   }
+
+  const counts = useMemo(() => {
+    const result: Record<Kind, number> = {
+      Entity: 0,
+      Event: 0,
+      Statement: 0,
+      Chunk: 0,
+      Dialogue: 0,
+    }
+    data?.nodes.forEach((node) => {
+      result[kindOf(node)] += 1
+    })
+    return result
+  }, [data])
+
+  const detail = useMemo(() => {
+    if (!data || !selected) return { relations: [], statements: [], events: [] }
+    const relations: { label: string; target: GraphNode }[] = []
+    const statements: GraphNode[] = []
+    const events: GraphNode[] = []
+
+    data.edges.forEach((edge) => {
+      if (edge.source !== selected.id && edge.target !== selected.id) return
+      const otherId = edge.source === selected.id ? edge.target : edge.source
+      const other = store.nodeMap.get(otherId)
+      if (!other) return
+
+      if (edge.rel === 'RELATION') {
+        relations.push({
+          label: edge.predicate_surface || edge.predicate || '关联',
+          target: other,
+        })
+      } else if (edge.rel === 'MENTIONS' && kindOf(other) === 'Statement') {
+        statements.push(other)
+      } else if (edge.rel === 'INVOLVES' && kindOf(other) === 'Event') {
+        events.push(other)
+      }
+    })
+
+    return { relations, statements, events }
+  }, [data, selected, store])
+
+  const viewHelp =
+    view === 'entity'
+      ? '只展示 Entity 与语义关系，适合查看系统真正记住的知识。'
+      : view === 'event'
+        ? '展示 Entity + Event，查看经历与参与实体。'
+        : '展示 Dialogue → Chunk → Statement → Entity 的来源链路，用于解释和调试。'
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <Card
-        title={isMobile ? undefined : '知识图谱'}
+        title={isMobile ? undefined : '记忆图谱'}
+        style={{ flex: 1, display: 'flex', flexDirection: 'column' }}
+        styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } }}
         extra={
-          <Space wrap size={isMobile ? 4 : 8} style={isMobile ? { width: '100%' } : undefined}>
-            <Input.Search
-              placeholder="搜索实体定位"
-              allowClear
+          <Space wrap size={6}>
+            <Segmented
               size="small"
-              style={{ width: isMobile ? 130 : 180 }}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              onSearch={doSearch}
+              value={view}
+              onChange={(value) => setView(value as GraphView)}
+              options={[
+                { label: '实体视图', value: 'entity' },
+                { label: '事件视图', value: 'event' },
+                { label: '溯源视图', value: 'provenance' },
+              ]}
             />
-            <Button
+            <Input.Search
               size="small"
-              icon={<AimOutlined />}
-              onClick={() => fgRef.current?.zoomToFit(500, 60)}
-            >
+              allowClear
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              onSearch={doSearch}
+              placeholder="搜索节点"
+              style={{ width: isMobile ? 130 : 180 }}
+            />
+            <Button size="small" icon={<AimOutlined />} onClick={() => fgRef.current?.zoomToFit(500, 70)}>
               {isMobile ? '' : '居中'}
             </Button>
-            <Button
-              size="small"
-              icon={<MergeCellsOutlined />}
-              loading={merging}
-              onClick={onMergeDuplicates}
-            >
+            <Button size="small" icon={<MergeCellsOutlined />} loading={merging} onClick={onMergeDuplicates}>
               {isMobile ? '' : '合并重复'}
             </Button>
-            <Button
-              size="small"
-              icon={<ReloadOutlined />}
-              onClick={resetView}
-              disabled={loading}
-            >
+            <Button size="small" icon={<ReloadOutlined />} onClick={clearPinsAndReset}>
               {isMobile ? '' : '重置视图'}
             </Button>
           </Space>
         }
-        styles={{ body: { padding: 0, height: isMobile ? 'calc(100% - 52px)' : 'calc(100% - 57px)' } }}
-        style={{ flex: 1, display: 'flex', flexDirection: 'column' }}
       >
         <div
           ref={wrapRef}
-          style={{ position: 'relative', height: '100%', minHeight: '32rem', overflow: 'hidden' }}
+          style={{ position: 'relative', height: isMobile ? '32rem' : 'min(58vh, 37rem)', minHeight: '28rem', overflow: 'hidden' }}
         >
           {loading ? (
-            <div style={center}>
-              <Spin />
-            </div>
+            <div style={center}><Spin /></div>
           ) : !data || data.nodes.length === 0 ? (
-            <div style={center}>
-              <Empty description="还没有记忆实体，先去主动记住或对话萃取一些记忆" />
-            </div>
+            <div style={center}><Empty description="还没有记忆图谱数据" /></div>
+          ) : graphData.nodes.length === 0 ? (
+            <div style={center}><Empty description="当前视图暂时没有可展示的节点" /></div>
           ) : (
             <>
               <ForceGraph2D
@@ -405,238 +417,247 @@ export default function GraphPage() {
                 nodeId="id"
                 cooldownTicks={120}
                 d3VelocityDecay={0.3}
-                // 默认滚轮留给页面滚动；Ctrl/⌘ + 滚轮才缩放图谱，避免占满内容区后「滚不动」
-                enableZoomInteraction={(e) => e.ctrlKey || e.metaKey}
-                linkColor={(l) =>
-                  highlightLinks.current.has(l as FGLink)
+                linkColor={(link) =>
+                  highlightLinks.current.has(link as FGLink)
                     ? '#155EEF'
-                    : (l as FGLink).rel === 'RELATION'
-                      ? 'rgba(150,160,175,0.55)'
-                      : 'rgba(200,205,215,0.4)'
+                    : (link as FGLink).rel === 'RELATION'
+                      ? 'rgba(107,119,140,0.58)'
+                      : 'rgba(170,180,195,0.42)'
                 }
-                linkWidth={(l) => (highlightLinks.current.has(l as FGLink) ? 2.5 : 1)}
-                linkDirectionalArrowLength={(l) =>
-                  (l as FGLink).rel === 'RELATION' ? 3.5 : 0
-                }
+                linkWidth={(link) => (highlightLinks.current.has(link as FGLink) ? 2.4 : 1)}
+                linkDirectionalArrowLength={(link) => (link as FGLink).rel === 'RELATION' ? 4 : 2.5}
                 linkDirectionalArrowRelPos={1}
-                linkLabel={(l) => {
-                  const e = l as FGLink
-                  return e.predicate_surface || e.predicate || REL_LABEL[e.rel ?? ''] || ''
+                linkLabel={(link) => {
+                  const item = link as FGLink
+                  return item.predicate_surface || item.predicate || REL_LABEL[item.rel ?? ''] || ''
                 }}
-                onNodeHover={(n) => onNodeHover(n as FGNode | null)}
-                onNodeClick={(n) => onNodeClick(n as FGNode)}
-                onNodeDragEnd={(n) => onNodeDragEnd(n as FGNode)}
-                onBackgroundClick={() => setSelected(null)}
-                nodeCanvasObject={(node, ctx, globalScale) => {
-                  const n = node as FGNode
-                  const r = nodeRadius(n)
-                  const color = KIND_META[kindOf(n)].color
-                  const dim =
-                    highlightNodes.current.size > 0 && !highlightNodes.current.has(n.id)
-                  ctx.globalAlpha = dim ? 0.18 : 1
-                  // 节点圆
+                onNodeHover={(node) => onNodeHover(node as FGNode | null)}
+                onNodeClick={(node) => onNodeClick(node as FGNode)}
+                onNodeDragEnd={(node) => onNodeDragEnd(node as FGNode)}
+                nodeCanvasObject={(rawNode, ctx, globalScale) => {
+                  const node = rawNode as FGNode
+                  const radius = nodeRadius(node)
+                  const kind = kindOf(node)
+                  const dimmed = highlightNodes.current.size > 0 && !highlightNodes.current.has(node.id)
+                  ctx.globalAlpha = dimmed ? 0.18 : 1
                   ctx.beginPath()
-                  ctx.arc(n.x!, n.y!, r, 0, 2 * Math.PI)
-                  ctx.fillStyle = color
+                  ctx.arc(node.x!, node.y!, radius, 0, Math.PI * 2)
+                  ctx.fillStyle = KIND_META[kind].color
                   ctx.fill()
-                  if (selected?.id === n.id) {
+                  if (selected?.id === node.id) {
                     ctx.lineWidth = 2 / globalScale
-                    ctx.strokeStyle = '#155EEF'
+                    ctx.strokeStyle = '#101828'
                     ctx.stroke()
                   }
-                  // 标签：缩得太小不画，避免糊成一团
-                  if (globalScale > 0.7 || r > 9) {
-                    const label = n.name.length > 10 ? n.name.slice(0, 10) + '…' : n.name
-                    const fs = Math.max(3, 11 / globalScale)
-                    ctx.font = `${fs}px -apple-system, "PingFang SC", sans-serif`
+                  if (globalScale > 0.7 || radius >= 8) {
+                    const label = node.name.length > 13 ? `${node.name.slice(0, 13)}…` : node.name
+                    const fontSize = Math.max(3.3, 11 / globalScale)
+                    ctx.font = `${fontSize}px -apple-system, "PingFang SC", sans-serif`
                     ctx.textAlign = 'center'
                     ctx.textBaseline = 'top'
-                    ctx.fillStyle = dim ? 'rgba(29,33,41,0.25)' : '#1D2129'
-                    ctx.fillText(label, n.x!, n.y! + r + 1)
+                    ctx.fillStyle = dimmed ? 'rgba(29,33,41,0.24)' : '#1D2129'
+                    ctx.fillText(label, node.x!, node.y! + radius + 2)
                   }
                   ctx.globalAlpha = 1
                 }}
-                nodePointerAreaPaint={(node, color, ctx) => {
-                  const n = node as FGNode
+                nodePointerAreaPaint={(rawNode, color, ctx) => {
+                  const node = rawNode as FGNode
                   ctx.fillStyle = color
                   ctx.beginPath()
-                  // 手机端加大点按热区，手指更好点中
-                  ctx.arc(n.x!, n.y!, nodeRadius(n) + (isMobile ? 6 : 2), 0, 2 * Math.PI)
+                  ctx.arc(node.x!, node.y!, nodeRadius(node) + (isMobile ? 6 : 3), 0, Math.PI * 2)
                   ctx.fill()
                 }}
               />
 
-              {/* 类型筛选圆点 */}
-              <div style={filterBar}>
-                {presentKinds.map((k) => {
-                  const on = visibleKinds.has(k)
-                  const meta = KIND_META[k]
-                  return (
-                    <span
-                      key={k}
-                      onClick={() => toggleKind(k)}
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 5,
-                        fontSize: 12,
-                        cursor: 'pointer',
-                        color: on ? '#1D2129' : '#BFBFBF',
-                        userSelect: 'none',
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: 10,
-                          height: 10,
-                          borderRadius: '50%',
-                          background: on ? meta.color : '#D9D9D9',
-                          display: 'inline-block',
-                        }}
-                      />
-                      {meta.label}
-                      <span style={{ color: '#98A2B3' }}>{kindCount.get(k) ?? 0}</span>
-                    </span>
-                  )
-                })}
+              <div style={hintPanel}>
+                <Text strong style={{ fontSize: 12 }}>{viewHelp}</Text>
+                <div style={{ marginTop: 4, fontSize: 11.5, color: '#667085' }}>
+                  当前展开 {graphData.nodes.length} 个节点 / {graphData.links.length} 条边
+                </div>
               </div>
 
-              {selected && (
-                <div style={isMobile ? detailSheetMobile : detailPanel}>
-                  <Text strong style={{ fontSize: 16 }}>
-                    {selected.name}
-                  </Text>
-                  <div style={{ margin: '8px 0', display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                    <Tag color="blue">{selected.type}</Tag>
-                    {selected.memory_layer === 'long_term' ? (
-                      <Tag color="gold">长期记忆</Tag>
-                    ) : (
-                      <Tag>短期记忆</Tag>
-                    )}
-                    {typeof selected.importance === 'number' && (
-                      <Tag color="green">重要度 {Math.round(selected.importance * 100)}</Tag>
-                    )}
+              <div style={legendPanel}>
+                <Text strong style={{ fontSize: 12 }}>节点类型</Text>
+                <LegendRow color={KIND_META.Entity.color} label={`实体 ${counts.Entity}`} />
+                {(view === 'event' || view === 'provenance') && <LegendRow color={KIND_META.Event.color} label={`事件 ${counts.Event}`} />}
+                {view === 'provenance' && (
+                  <>
+                    <LegendRow color={KIND_META.Statement.color} label={`陈述 ${counts.Statement}`} />
+                    <LegendRow color={KIND_META.Chunk.color} label={`文本块 ${counts.Chunk}`} />
+                    <LegendRow color={KIND_META.Dialogue.color} label={`对话 ${counts.Dialogue}`} />
+                  </>
+                )}
+                {data.communities.length > 0 && (
+                  <div style={{ marginTop: 9, paddingTop: 8, borderTop: '1px solid #f0f1f3' }}>
+                    <Text type="secondary" style={{ fontSize: 11 }}>社区 {data.communities.length} 个</Text>
                   </div>
-                  {selected.description && (
-                    <Paragraph type="secondary" style={{ fontSize: 13, marginBottom: 8 }}>
-                      {selected.description}
-                    </Paragraph>
-                  )}
-                  {selected.traits && selected.traits.length > 0 && (
-                    <div style={{ marginBottom: 8 }}>
-                      {selected.traits.map((t) => (
-                        <Tag key={t} color="purple" style={{ fontSize: 12 }}>
-                          {t}
-                        </Tag>
-                      ))}
-                    </div>
-                  )}
-                  {selected.core_facts && selected.core_facts.length > 0 && (
-                    <div style={{ marginBottom: 8 }}>
-                      {selected.core_facts.slice(0, 5).map((f, i) => (
-                        <div key={i} style={{ fontSize: 12.5, color: '#155EEF', lineHeight: 1.7 }}>
-                          ✦ {f}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <div style={{ fontSize: 12, color: '#98A2B3' }}>
-                    被提及 {selected.mention_count ?? 1} 次 · 被检索 {selected.access_count ?? 0} 次
-                  </div>
-                  <Button
-                    size="small"
-                    type="text"
-                    style={{ marginTop: 8, paddingLeft: 0, color: '#98A2B3' }}
-                    onClick={() => setSelected(null)}
-                  >
-                    关闭
-                  </Button>
-                </div>
-              )}
-
-              <div style={isMobile ? { ...hintBox, ...hintBoxMobile } : hintBox}>
-                共 {data.nodes.length} 节点 · {data.edges.length} 关系，当前展开{' '}
-                {graphData.nodes.length} 个
-                <br />
-                {isMobile
-                  ? '点节点展开关联 · 双指缩放 · 拖动整理 · 下方筛类型'
-                  : '点节点展开它的关联 · 拖动可固定 · 滚轮缩放 · 搜索定位 · 下方圆点筛类型'}
+                )}
               </div>
             </>
           )}
         </div>
+
+        <NodeDetail node={selected} detail={detail} onOpenProvenance={() => setView('provenance')} />
       </Card>
     </div>
   )
 }
 
-const center: React.CSSProperties = {
-  display: 'flex',
-  justifyContent: 'center',
-  alignItems: 'center',
+function LegendRow({ color, label }: { color: string; label: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 7, fontSize: 11.5, color: '#475467' }}>
+      <span style={{ width: 9, height: 9, borderRadius: '50%', background: color, display: 'inline-block' }} />
+      {label}
+    </div>
+  )
+}
+
+function NodeDetail({
+  node,
+  detail,
+  onOpenProvenance,
+}: {
+  node: GraphNode | null
+  detail: {
+    relations: { label: string; target: GraphNode }[]
+    statements: GraphNode[]
+    events: GraphNode[]
+  }
+  onOpenProvenance: () => void
+}) {
+  if (!node) {
+    return (
+      <div style={{ padding: '14px 18px', borderTop: '1px solid #eef0f4', background: '#fff' }}>
+        <Text type="secondary">点击图中的节点，在这里查看节点详情、语义关系和来源。</Text>
+      </div>
+    )
+  }
+
+  const kind = kindOf(node)
+  return (
+    <div
+      style={{
+        borderTop: '1px solid #eef0f4',
+        background: '#fff',
+        padding: '14px 18px 16px',
+        display: 'grid',
+        gridTemplateColumns: 'minmax(240px, 0.8fr) minmax(300px, 1.2fr)',
+        gap: 18,
+      }}
+    >
+      <div>
+        <Space size={6} wrap>
+          <Text strong style={{ fontSize: 15 }}>节点详情：{node.name}</Text>
+          <Tag color="blue" style={{ margin: 0 }}>{KIND_META[kind].label}</Tag>
+          {node.memory_layer && (
+            <Tag color={node.memory_layer === 'long_term' ? 'green' : 'default'} style={{ margin: 0 }}>
+              {node.memory_layer === 'long_term' ? '长期记忆' : '短期记忆'}
+            </Tag>
+          )}
+        </Space>
+        {node.description && (
+          <Paragraph type="secondary" style={{ margin: '8px 0', fontSize: 12.5 }} ellipsis={{ rows: 3, expandable: true, symbol: '展开' }}>
+            {node.description}
+          </Paragraph>
+        )}
+        <Space size={5} wrap>
+          {typeof node.importance === 'number' && <Tag>重要度 {node.importance.toFixed(2)}</Tag>}
+          {node.community_id && <Tag color="purple">社区 {node.community_id.slice(0, 8)}</Tag>}
+          {kind === 'Entity' && <Tag>被提及 {node.mention_count ?? 0}</Tag>}
+          {kind === 'Entity' && <Tag>被召回 {node.access_count ?? 0}</Tag>}
+        </Space>
+        {node.core_facts && node.core_facts.length > 0 && (
+          <div style={{ marginTop: 9 }}>
+            {node.core_facts.slice(0, 4).map((fact) => (
+              <div key={fact} style={{ color: '#155EEF', fontSize: 12.5, lineHeight: 1.75 }}>✦ {fact}</div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 }}>
+        <DetailColumn title={`相关关系 (${detail.relations.length})`}>
+          {detail.relations.length === 0 ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>暂无语义关系</Text>
+          ) : detail.relations.slice(0, 8).map((item, index) => (
+            <div key={`${item.target.id}-${index}`} style={detailRow}>
+              <Text>{node.name}</Text> <Text type="secondary">— {item.label} →</Text> <Text>{item.target.name}</Text>
+            </div>
+          ))}
+        </DetailColumn>
+
+        <DetailColumn title={`相关事件 (${detail.events.length})`}>
+          {detail.events.length === 0 ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>暂无关联事件</Text>
+          ) : detail.events.slice(0, 6).map((event) => (
+            <div key={event.id} style={detailRow}>{event.name}</div>
+          ))}
+        </DetailColumn>
+
+        <DetailColumn title={`来源陈述 (${detail.statements.length})`}>
+          {detail.statements.length === 0 ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>暂无直接来源陈述</Text>
+          ) : (
+            <>
+              {detail.statements.slice(0, 4).map((statement) => (
+                <div key={statement.id} style={detailRow}>{statement.name || statement.description}</div>
+              ))}
+              <Button type="link" size="small" style={{ paddingLeft: 0 }} onClick={onOpenProvenance}>
+                查看完整溯源 →
+              </Button>
+            </>
+          )}
+        </DetailColumn>
+      </div>
+    </div>
+  )
+}
+
+function DetailColumn({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div style={{ minWidth: 0, borderLeft: '1px solid #f0f1f3', paddingLeft: 12 }}>
+      <Text strong style={{ fontSize: 12.5 }}>{title}</Text>
+      <div style={{ marginTop: 7 }}>{children}</div>
+    </div>
+  )
+}
+
+const center: CSSProperties = {
   height: '100%',
-}
-
-const filterBar: React.CSSProperties = {
-  position: 'absolute',
-  bottom: 14,
-  left: '50%',
-  transform: 'translateX(-50%)',
   display: 'flex',
-  flexWrap: 'wrap',
-  gap: 8,
-  background: 'rgba(255,255,255,0.92)',
-  borderRadius: 20,
-  padding: '6px 12px',
-  boxShadow: '0 2px 10px rgba(0,0,0,0.08)',
+  alignItems: 'center',
+  justifyContent: 'center',
 }
 
-const detailPanel: React.CSSProperties = {
+const hintPanel: CSSProperties = {
   position: 'absolute',
-  top: 16,
-  right: 16,
-  width: '18rem',
-  maxWidth: '80%',
-  background: '#fff',
-  borderRadius: 12,
-  boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
-  padding: 16,
-}
-
-// 手机端：详情改为顶部抽屉式卡片（不挡底部的类型筛选条）
-const detailSheetMobile: React.CSSProperties = {
-  position: 'absolute',
-  left: 0,
-  right: 0,
-  top: 0,
-  background: '#fff',
-  borderRadius: '0 0 16px 16px',
-  boxShadow: '0 6px 20px rgba(0,0,0,0.12)',
-  padding: 16,
-  maxHeight: '52%',
-  overflowY: 'auto',
-  zIndex: 5,
-}
-
-const hintBox: React.CSSProperties = {
-  position: 'absolute',
-  left: 16,
-  top: 16,
-  background: 'rgba(255,255,255,0.92)',
+  top: 14,
+  left: 14,
+  maxWidth: '55%',
+  padding: '8px 10px',
   borderRadius: 8,
-  padding: '6px 10px',
-  fontSize: 12,
-  color: '#667085',
+  background: 'rgba(255,255,255,0.92)',
+  border: '1px solid rgba(234,236,240,0.9)',
   pointerEvents: 'none',
-  maxWidth: '60%',
 }
 
-// 手机端提示：更窄、字更小、贴边，少占空间
-const hintBoxMobile: React.CSSProperties = {
-  left: 8,
-  top: 8,
-  padding: '5px 8px',
-  fontSize: 11,
-  maxWidth: '92%',
-  lineHeight: 1.5,
+const legendPanel: CSSProperties = {
+  position: 'absolute',
+  top: 14,
+  right: 14,
+  minWidth: 126,
+  padding: '10px 12px',
+  borderRadius: 9,
+  background: 'rgba(255,255,255,0.94)',
+  border: '1px solid #eef0f4',
+  boxShadow: '0 3px 14px rgba(16,24,40,0.06)',
+}
+
+const detailRow: CSSProperties = {
+  fontSize: 12,
+  color: '#475467',
+  lineHeight: 1.65,
+  marginBottom: 5,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
 }
