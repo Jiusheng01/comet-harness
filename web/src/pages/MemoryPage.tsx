@@ -271,10 +271,9 @@ export default function MemoryPage() {
             insights={insights}
             onRefresh={load}
             onGraph={() => navigate('/graph')}
-            onSearchTab={() => setMode('search')}
           />
         ) : mode === 'search' ? (
-          <SearchPanel entities={entities} />
+          <SearchPanel />
         ) : mode === 'insights' ? (
           <InsightsPanel insights={insights} loading={loading} onRefresh={load} />
         ) : mode === 'timeline' ? (
@@ -323,7 +322,6 @@ function OverviewPanel({
   insights,
   onRefresh,
   onGraph,
-  onSearchTab,
 }: {
   loading: boolean
   entities: ProfileEntity[]
@@ -337,28 +335,9 @@ function OverviewPanel({
   insights: Insight[]
   onRefresh: () => void
   onGraph: () => void
-  onSearchTab: () => void
 }) {
-  const [quickQuery, setQuickQuery] = useState('')
-  const [quickHits, setQuickHits] = useState<MemoryHit[]>([])
-  const [quickSearching, setQuickSearching] = useState(false)
   const longPercent = total > 0 ? Math.round((longTerm / total) * 100) : 0
   const shortPercent = total > 0 ? 100 - longPercent : 0
-
-  const quickSearch = async (value?: string) => {
-    const query = (value ?? quickQuery).trim()
-    if (!query) return
-    setQuickQuery(query)
-    setQuickSearching(true)
-    try {
-      const { data } = await memoryApi.search(query, 5)
-      setQuickHits(data)
-    } catch (e) {
-      message.error((e as Error).message)
-    } finally {
-      setQuickSearching(false)
-    }
-  }
 
   if (loading && entities.length === 0) {
     return <div style={{ textAlign: 'center', padding: 48 }}><Spin /></div>
@@ -492,51 +471,6 @@ function OverviewPanel({
         </div>
       </div>
 
-      <Card size="small" title="快速检索" styles={{ body: { padding: 14 } }}>
-        <Space.Compact style={{ width: '100%' }}>
-          <Input
-            value={quickQuery}
-            onChange={(event) => {
-              setQuickQuery(event.target.value)
-              if (!event.target.value.trim()) setQuickHits([])
-            }}
-            onPressEnter={() => quickSearch()}
-            placeholder="输入你想检索的记忆，例如：我的技术方向、最近准备的面试"
-            allowClear
-          />
-          <Button type="primary" icon={<SearchOutlined />} loading={quickSearching} onClick={() => quickSearch()}>
-            检索
-          </Button>
-        </Space.Compact>
-
-        {topEntities.length > 0 && (
-          <Space wrap size={6} style={{ marginTop: 10 }}>
-            {topEntities.slice(0, 4).map((entity) => (
-              <Tag key={entity.id} style={{ cursor: 'pointer' }} onClick={() => quickSearch(entity.name)}>
-                {entity.name}
-              </Tag>
-            ))}
-            <Button type="link" size="small" onClick={onSearchTab}>进入记忆检索 →</Button>
-          </Space>
-        )}
-
-        {quickHits.length > 0 && (
-          <div style={{ marginTop: 12, borderTop: '1px solid #f0f1f3', paddingTop: 10 }}>
-            {quickHits.map((hit) => (
-              <div key={hit.id} style={{ padding: '6px 0' }}>
-                <Space size={6} wrap>
-                  <Text strong>{hit.name}</Text>
-                  <Tag color="blue" style={{ margin: 0 }}>{hit.type}</Tag>
-                  <TrustTag confidence={hit.confidence} />
-                  <Tag style={{ margin: 0 }}>score {hit.score}</Tag>
-                </Space>
-                {hit.description && <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>{hit.description}</Text>}
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
-
       {insights.length > 0 && (
         <div style={{ padding: '2px 2px 0' }}>
           <Space size={6}>
@@ -608,7 +542,7 @@ function CoreEntityRow({ entity, last }: { entity: ProfileEntity; last: boolean 
   )
 }
 
-function SearchPanel({ entities }: { entities: ProfileEntity[] }) {
+function SearchPanel() {
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<MemoryHit[]>([])
   const [searching, setSearching] = useState(false)
@@ -646,14 +580,6 @@ function SearchPanel({ entities }: { entities: ProfileEntity[] }) {
         size="large"
         placeholder="例如：我的工作方向、我最近在准备什么"
       />
-      {!searched && entities.length > 0 && (
-        <Space wrap>
-          <Text type="secondary">可以试试：</Text>
-          {entities.slice(0, 6).map((entity) => (
-            <Tag key={entity.id} style={{ cursor: 'pointer' }} onClick={() => search(entity.name)}>{entity.name}</Tag>
-          ))}
-        </Space>
-      )}
       {searching ? (
         <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>
       ) : searched && hits.length === 0 ? (
