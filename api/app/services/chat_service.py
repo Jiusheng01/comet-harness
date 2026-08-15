@@ -1153,7 +1153,9 @@ class ChatService:
         system_prompt = await _assemble_prompt(has_tools=bool(tools))
         checkpoint_store = None
 
-        if checkpoint_id is not None and tools:
+        # 所有纯文本 turn 都建立 Harness checkpoint；无工具聊天也必须具备
+        # crash recovery / durable ACK 语义，而不是绕过 Runtime 直接 model.astream。
+        if checkpoint_id is not None:
             from app.core.harness.checkpoint.postgres_store import (
                 PostgresCheckpointStore,
             )
@@ -1163,31 +1165,14 @@ class ChatService:
                 user_id,
             )
 
-        if not tools:
-            # 无工具：纯流式（仍包一层 llm_call span，保证「执行轨迹」有内容：模型/耗时/token）
+        # tools=[] 时 LangChainModelAdapter 不会 bind_tools，因此普通文本模型也可以
+        # 复用 AgentRuntime。只有“存在工具且模型不支持原生 Function Calling”才走 ReAct。
+        if not tools or supports_function_call(config):
             lc_messages: list = []
             if system_prompt:
                 lc_messages.append(SystemMessage(content=system_prompt))
             lc_messages.extend(history)
             lc_messages.append(HumanMessage(content=composed_text))
-            tracer = get_tracer()
-            async with tracer.llm_span(
-                f"对话:{config.model_name}", model_name=config.model_name
-            ):
-                agg = None
-                async for chunk in model.astream(lc_messages):
-                    agg = chunk if agg is None else agg + chunk
-                    if chunk.content:
-                        yield {"type": "token", "text": chunk.content}
-                push_llm_usage(agg, model)  # 有 usage_metadata 则记 token/成本，无则仅记耗时
-        elif supports_function_call(config):
-            # 强模型：原生 function calling
-            lc_messages = []
-            if system_prompt:
-                lc_messages.append(SystemMessage(content=system_prompt))
-            lc_messages.extend(history)
-            lc_messages.append(HumanMessage(content=composed_text))
-
 
             async for ev in run_function_calling(
                 model,
@@ -1200,7 +1185,7 @@ class ChatService:
             ):
                 yield ev
         else:
-            # 弱模型：ReAct
+            # 弱模型 + 工具：ReAct
             async for ev in run_react(
                 model,
                 tools,
