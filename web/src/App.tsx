@@ -17,7 +17,6 @@ const AgentConfigPage = lazy(() => import('./pages/AgentConfigPage'))
 const SkillPage = lazy(() => import('./pages/SkillPage'))
 const ToolConfigPage = lazy(() => import('./pages/ToolConfigPage'))
 const SearchPage = lazy(() => import('./pages/SearchPage'))
-const FavoritesPage = lazy(() => import('./pages/FavoritesPage'))
 const ProfilePage = lazy(() => import('./pages/ProfilePage'))
 const SharePage = lazy(() => import('./pages/SharePage'))
 const ReportSharePage = lazy(() => import('./pages/ReportSharePage'))
@@ -53,7 +52,6 @@ export default function App() {
             <Route path="memory" element={<MemoryPage />} />
             <Route path="graph" element={<GraphPage />} />
             <Route path="search" element={<SearchPage />} />
-            <Route path="favorites" element={<FavoritesPage />} />
             <Route path="traces" element={<TracesPage />} />
             <Route path="profile" element={<ProfilePage />} />
             <Route path="settings/models" element={<ModelConfigPage />} />
