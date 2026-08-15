@@ -2,10 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   Button,
   Card,
-  Dropdown,
   Empty,
   Input,
-  Modal,
   Segmented,
   Space,
   Spin,
@@ -20,14 +18,10 @@ import {
   BulbOutlined,
   CheckCircleOutlined,
   ClockCircleOutlined,
-  ClusterOutlined,
-  DownOutlined,
   ExclamationCircleOutlined,
-  PlusOutlined,
   ReloadOutlined,
   SearchOutlined,
   ShareAltOutlined,
-  ThunderboltOutlined,
 } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -110,11 +104,6 @@ export default function MemoryPage() {
   const [recent, setRecent] = useState<MemoryListData | null>(null)
   const [loading, setLoading] = useState(true)
 
-  const [rememberOpen, setRememberOpen] = useState(false)
-  const [rememberText, setRememberText] = useState('')
-  const [remembering, setRemembering] = useState(false)
-  const [runningAction, setRunningAction] = useState<string | null>(null)
-
   const load = async () => {
     setLoading(true)
     try {
@@ -165,53 +154,6 @@ export default function MemoryPage() {
     ? entities.reduce((sum, entity) => sum + (entity.confidence ?? 0.8), 0) / entities.length
     : 0
 
-  const runAdvanced = async (key: string) => {
-    if (key === 'remember') {
-      setRememberOpen(true)
-      return
-    }
-    setRunningAction(key)
-    try {
-      if (key === 'consolidate') {
-        const { data } = await memoryApi.consolidate()
-        message.success(
-          `巩固完成：${data.promoted_entities} 个实体、${data.promoted_statements} 条陈述晋升长期记忆`,
-        )
-        await load()
-      } else if (key === 'reflect') {
-        const { data } = await memoryApi.reflect()
-        message.success(data.insights > 0 ? `Reflection 完成：更新 ${data.insights} 条洞察` : 'Reflection 完成：暂无新洞察')
-        await load()
-      } else if (key === 'recluster') {
-        await memoryApi.recluster()
-        message.success('记忆社区重新聚类完成')
-      }
-    } catch (e) {
-      message.error((e as Error).message)
-    } finally {
-      setRunningAction(null)
-    }
-  }
-
-  const onRemember = async () => {
-    const value = rememberText.trim()
-    if (!value) {
-      message.warning('请输入要记住的内容')
-      return
-    }
-    setRemembering(true)
-    try {
-      await memoryApi.remember(value)
-      setRememberText('')
-      setRememberOpen(false)
-      message.success('已提交记忆萃取；完成后刷新即可看到新实体')
-    } catch (e) {
-      message.error((e as Error).message)
-    } finally {
-      setRemembering(false)
-    }
-  }
-
   const tabs = [
     { label: '概览', value: 'overview', icon: <AppstoreOutlined /> },
     { label: '记忆检索', value: 'search', icon: <SearchOutlined /> },
@@ -230,31 +172,12 @@ export default function MemoryPage() {
         title="记忆"
         className="memory-card"
         extra={
-          <Space wrap>
-            <Segmented
-              className="memory-tabs"
-              value={mode}
-              onChange={(value) => setMode(value as MemoryMode)}
-              options={tabs}
-            />
-            <Dropdown
-              trigger={['click']}
-              menu={{
-                items: [
-                  { key: 'remember', icon: <PlusOutlined />, label: '主动添加记忆' },
-                  { type: 'divider' },
-                  { key: 'consolidate', icon: <ThunderboltOutlined />, label: '运行 Consolidation' },
-                  { key: 'reflect', icon: <BulbOutlined />, label: '运行 Reflection' },
-                  { key: 'recluster', icon: <ClusterOutlined />, label: '重新聚类' },
-                ],
-                onClick: ({ key }) => runAdvanced(key),
-              }}
-            >
-              <Button loading={runningAction !== null}>
-                高级操作 <DownOutlined />
-              </Button>
-            </Dropdown>
-          </Space>
+          <Segmented
+            className="memory-tabs"
+            value={mode}
+            onChange={(value) => setMode(value as MemoryMode)}
+            options={tabs}
+          />
         }
       >
         {mode === 'overview' ? (
@@ -282,29 +205,6 @@ export default function MemoryPage() {
           <ReviewPanel />
         )}
       </Card>
-
-      <Modal
-        title="主动添加记忆"
-        open={rememberOpen}
-        onCancel={() => setRememberOpen(false)}
-        onOk={onRemember}
-        okText="记住"
-        cancelText="取消"
-        confirmLoading={remembering}
-        destroyOnHidden
-      >
-        <Paragraph type="secondary" style={{ marginTop: 0 }}>
-          正常对话会自动萃取。这里用于显式告诉系统一条希望保留的事实。
-        </Paragraph>
-        <Input.TextArea
-          value={rememberText}
-          onChange={(event) => setRememberText(event.target.value)}
-          placeholder="例如：我的主力语言是 Python，我正在准备后端方向面试"
-          autoSize={{ minRows: 4, maxRows: 8 }}
-          maxLength={2000}
-          showCount
-        />
-      </Modal>
     </div>
   )
 }
