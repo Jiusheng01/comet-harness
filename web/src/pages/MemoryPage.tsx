@@ -26,8 +26,6 @@ import {
   PlusOutlined,
   ReloadOutlined,
   SearchOutlined,
-  StarFilled,
-  StarOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import {
@@ -37,10 +35,8 @@ import {
   type Insight,
   type MemoryHit,
   type MemoryProfile,
-  type ProfileEntity,
   type TimelineEvent,
 } from '@/api/memories'
-import { favoriteApi } from '@/api/favorites'
 import ReviewPanel from '@/components/memory/ReviewPanel'
 
 const { Text, Paragraph } = Typography
@@ -151,30 +147,14 @@ function ProfilePanel() {
   const [text, setText] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [consolidating, setConsolidating] = useState(false)
-  // 已收藏的记忆实体：entity_id -> favorite_id（用于高亮与取消）
-  const [favMap, setFavMap] = useState<Record<string, string>>({})
   const pollRef = useRef<number | null>(null)
   const pollCount = useRef(0)
-
-  const loadFavorites = async () => {
-    try {
-      const { data } = await favoriteApi.list('memory')
-      const map: Record<string, string> = {}
-      data.forEach((f) => {
-        map[f.target_id] = f.id
-      })
-      setFavMap(map)
-    } catch {
-      // 收藏状态加载失败不影响画像
-    }
-  }
 
   const load = async () => {
     setLoading(true)
     try {
       const { data } = await memoryApi.profile()
       setProfile(data)
-      loadFavorites()
     } catch (e) {
       message.error((e as Error).message)
     } finally {
@@ -240,32 +220,6 @@ function ProfilePanel() {
       message.error((e as Error).message)
     } finally {
       setConsolidating(false)
-    }
-  }
-
-  const onFavoriteEntity = async (ent: ProfileEntity) => {
-    const existingFavId = favMap[ent.id]
-    try {
-      if (existingFavId) {
-        // 已收藏 → 取消
-        await favoriteApi.remove(existingFavId)
-        setFavMap((prev) => {
-          const next = { ...prev }
-          delete next[ent.id]
-          return next
-        })
-        message.success('已取消收藏')
-      } else {
-        // 未收藏 → 收藏
-        const { data } = await favoriteApi.add('memory', ent.id, {
-          title: ent.name,
-          summary: ent.description,
-        })
-        setFavMap((prev) => ({ ...prev, [ent.id]: data.id }))
-        message.success('已收藏')
-      }
-    } catch (e) {
-      message.error((e as Error).message)
     }
   }
 
@@ -348,22 +302,9 @@ function ProfilePanel() {
                           </Tag>
                         )}
                       </Space>
-                      <Space size={4}>
-                        {favMap[ent.id] ? (
-                          <StarFilled
-                            onClick={() => onFavoriteEntity(ent)}
-                            style={{ color: '#FAAD14', cursor: 'pointer' }}
-                          />
-                        ) : (
-                          <StarOutlined
-                            onClick={() => onFavoriteEntity(ent)}
-                            style={{ color: '#C0C4CC', cursor: 'pointer' }}
-                          />
-                        )}
-                        <Popconfirm title="删除该记忆实体？" onConfirm={() => onDeleteEntity(ent.id)}>
-                          <DeleteOutlined style={{ color: '#C0C4CC' }} />
-                        </Popconfirm>
-                      </Space>
+                      <Popconfirm title="删除该记忆实体？" onConfirm={() => onDeleteEntity(ent.id)}>
+                        <DeleteOutlined style={{ color: '#C0C4CC' }} />
+                      </Popconfirm>
                     </div>
                     {ent.description && (
                       <Paragraph
