@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { Button, Card, Empty, Input, Segmented, Space, Spin, Tag, Typography, message } from 'antd'
 import {
   AimOutlined,
-  MergeCellsOutlined,
   ReloadOutlined,
 } from '@ant-design/icons'
 import ForceGraph2D, { type ForceGraphMethods } from 'react-force-graph-2d'
@@ -99,7 +98,6 @@ export default function GraphPage() {
   const [selected, setSelected] = useState<GraphNode | null>(null)
   const [shownIds, setShownIds] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
-  const [merging, setMerging] = useState(false)
 
   const wrapRef = useRef<HTMLDivElement>(null)
   const fgRef = useRef<ForceGraphMethods<FGNode, FGLink> | undefined>(undefined)
@@ -167,6 +165,7 @@ export default function GraphPage() {
     allowedEdges.forEach((edge) => {
       if (!eligible.has(edge.source) || !eligible.has(edge.target)) return
       edges.push(edge)
+      // 实体/事件视图需要无向邻接用于展开；溯源方向单独由 provenanceParents 管理。
       adj.get(edge.source)?.add(edge.target)
       adj.get(edge.target)?.add(edge.source)
       degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1)
@@ -175,6 +174,31 @@ export default function GraphPage() {
 
     return { eligible, adj, degree, edges }
   }, [data, view])
+
+  const provenanceParents = useMemo(() => {
+    const parents = new Map<string, Set<string>>()
+    if (view !== 'provenance') return parents
+    viewStore.eligible.forEach((id) => parents.set(id, new Set()))
+    viewStore.edges.forEach((edge) => {
+      // 后端溯源边方向固定为：Dialogue -> Chunk -> Statement -> Entity。
+      parents.get(edge.target)?.add(edge.source)
+    })
+    return parents
+  }, [view, viewStore])
+
+  const collectProvenanceAncestors = useCallback((id: string) => {
+    const ids = new Set<string>([id])
+    const queue = [id]
+    while (queue.length > 0) {
+      const current = queue.shift()!
+      provenanceParents.get(current)?.forEach((parent) => {
+        if (ids.has(parent)) return
+        ids.add(parent)
+        queue.push(parent)
+      })
+    }
+    return ids
+  }, [provenanceParents])
 
   const chooseSeed = useCallback(() => {
     if (!data) return null
@@ -198,25 +222,18 @@ export default function GraphPage() {
       return
     }
 
-    const ids = new Set<string>([seed.id])
-    let frontier = [seed.id]
-    const hops = view === 'provenance' ? 3 : 1
-    for (let hop = 0; hop < hops; hop += 1) {
-      const next: string[] = []
-      frontier.forEach((id) => {
-        viewStore.adj.get(id)?.forEach((neighbor) => {
-          if (ids.has(neighbor)) return
-          ids.add(neighbor)
-          next.push(neighbor)
-        })
-      })
-      frontier = next
+    if (view === 'provenance') {
+      // 溯源只能沿来源方向反向追踪，避免经同一句话横向扩散到其它实体。
+      setShownIds(collectProvenanceAncestors(seed.id))
+    } else {
+      const ids = new Set<string>([seed.id])
+      viewStore.adj.get(seed.id)?.forEach((id) => ids.add(id))
+      setShownIds(ids)
     }
 
-    setShownIds(ids)
     setSelected(seed)
     setTimeout(() => fgRef.current?.zoomToFit(500, 70), 350)
-  }, [chooseSeed, view, viewStore])
+  }, [chooseSeed, collectProvenanceAncestors, view, viewStore])
 
   useEffect(() => {
     resetFocus()
@@ -256,9 +273,23 @@ export default function GraphPage() {
     if (!graph) return
     const count = graphData.nodes.length
     graph.d3Force('charge')?.strength(count > 50 ? -420 : count > 20 ? -320 : -240)
-    graph.d3Force('link')?.distance(view === 'provenance' ? 65 : 90)
+    graph.d3Force('link')?.distance(view === 'provenance' ? 76 : 90)
     graph.d3ReheatSimulation()
   }, [graphData, view])
+
+  const visibleCounts = useMemo(() => {
+    const result: Record<Kind, number> = {
+      Entity: 0,
+      Event: 0,
+      Statement: 0,
+      Chunk: 0,
+      Dialogue: 0,
+    }
+    graphData.nodes.forEach((node) => {
+      result[kindOf(node)] += 1
+    })
+    return result
+  }, [graphData.nodes])
 
   const maxDegree = useMemo(
     () => Math.max(1, ...Array.from(viewStore.degree.values())),
@@ -295,9 +326,9 @@ export default function GraphPage() {
   }, [graphData])
 
   const onNodeClick = useCallback((node: FGNode) => {
-    expand(node.id)
+    if (view !== 'provenance') expand(node.id)
     setSelected(store.nodeMap.get(node.id) ?? node)
-  }, [expand, store])
+  }, [expand, store, view])
 
   const onNodeDragEnd = useCallback((node: FGNode) => {
     node.fx = node.x
@@ -314,28 +345,21 @@ export default function GraphPage() {
       message.info('当前视图没有找到匹配节点')
       return
     }
-    const ids = new Set<string>([hit.id])
-    viewStore.adj.get(hit.id)?.forEach((neighbor) => ids.add(neighbor))
-    setShownIds((previous) => new Set([...previous, ...ids]))
+
+    if (view === 'provenance') {
+      setShownIds(collectProvenanceAncestors(hit.id))
+    } else {
+      const ids = new Set<string>([hit.id])
+      viewStore.adj.get(hit.id)?.forEach((neighbor) => ids.add(neighbor))
+      setShownIds((previous) => new Set([...previous, ...ids]))
+    }
+
     setSelected(store.nodeMap.get(hit.id) ?? hit)
     setTimeout(() => {
       if (hit.x != null && hit.y != null) fgRef.current?.centerAt(hit.x, hit.y, 500)
       fgRef.current?.zoom(2.1, 500)
     }, 250)
-  }, [store, viewStore])
-
-  const onMergeDuplicates = async () => {
-    setMerging(true)
-    try {
-      const { data } = await memoryApi.mergeDuplicates()
-      message.success(`已合并 ${data.removed} 个重复实体`)
-      load(false)
-    } catch (error) {
-      message.error((error as Error).message)
-    } finally {
-      setMerging(false)
-    }
-  }
+  }, [collectProvenanceAncestors, store, view, viewStore])
 
   const clearPinsAndReset = () => {
     store.fgNodes.forEach((node) => {
@@ -344,20 +368,6 @@ export default function GraphPage() {
     })
     resetFocus()
   }
-
-  const counts = useMemo(() => {
-    const result: Record<Kind, number> = {
-      Entity: 0,
-      Event: 0,
-      Statement: 0,
-      Chunk: 0,
-      Dialogue: 0,
-    }
-    data?.nodes.forEach((node) => {
-      result[kindOf(node)] += 1
-    })
-    return result
-  }, [data])
 
   const detail = useMemo(() => {
     if (!data || !selected) {
@@ -402,7 +412,7 @@ export default function GraphPage() {
       ? '系统记住了什么：只展示实体与语义关系。'
       : view === 'event'
         ? '发生过什么：只展示事件与参与实体，不混入普通语义关系。'
-        : '为什么记住：只展示 Dialogue → Chunk → Statement → Entity 的来源链路。'
+        : '为什么记住：沿 Dialogue → Chunk → Statement → Entity 的来源方向回溯，不横向扩散实体。'
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -433,9 +443,6 @@ export default function GraphPage() {
             />
             <Button size="small" icon={<AimOutlined />} onClick={() => fgRef.current?.zoomToFit(500, 70)}>
               {isMobile ? '' : '居中'}
-            </Button>
-            <Button size="small" icon={<MergeCellsOutlined />} loading={merging} onClick={onMergeDuplicates}>
-              {isMobile ? '' : '合并重复'}
             </Button>
             <Button size="small" icon={<ReloadOutlined />} onClick={clearPinsAndReset}>
               {isMobile ? '' : '重置视图'}
@@ -498,7 +505,11 @@ export default function GraphPage() {
                     ctx.stroke()
                   }
                   if (globalScale > 0.7 || radius >= 8) {
-                    const label = node.name.length > 13 ? `${node.name.slice(0, 13)}…` : node.name
+                    const baseLabel = node.name.length > 13 ? `${node.name.slice(0, 13)}…` : node.name
+                    const prefix = view === 'provenance' && kind !== 'Entity'
+                      ? `${KIND_META[kind].label} · `
+                      : ''
+                    const label = `${prefix}${baseLabel}`
                     const fontSize = Math.max(3.3, 11 / globalScale)
                     ctx.font = `${fontSize}px -apple-system, "PingFang SC", sans-serif`
                     ctx.textAlign = 'center'
@@ -525,14 +536,14 @@ export default function GraphPage() {
               </div>
 
               <div style={legendPanel}>
-                <Text strong style={{ fontSize: 12 }}>节点类型</Text>
-                <LegendRow color={KIND_META.Entity.color} label={`实体 ${counts.Entity}`} />
-                {view === 'event' && <LegendRow color={KIND_META.Event.color} label={`事件 ${counts.Event}`} />}
+                <Text strong style={{ fontSize: 12 }}>当前节点</Text>
+                <LegendRow color={KIND_META.Entity.color} label={`实体 ${visibleCounts.Entity}`} />
+                {view === 'event' && <LegendRow color={KIND_META.Event.color} label={`事件 ${visibleCounts.Event}`} />}
                 {view === 'provenance' && (
                   <>
-                    <LegendRow color={KIND_META.Statement.color} label={`陈述 ${counts.Statement}`} />
-                    <LegendRow color={KIND_META.Chunk.color} label={`文本块 ${counts.Chunk}`} />
-                    <LegendRow color={KIND_META.Dialogue.color} label={`对话 ${counts.Dialogue}`} />
+                    <LegendRow color={KIND_META.Statement.color} label={`陈述 ${visibleCounts.Statement}`} />
+                    <LegendRow color={KIND_META.Chunk.color} label={`文本块 ${visibleCounts.Chunk}`} />
+                    <LegendRow color={KIND_META.Dialogue.color} label={`对话 ${visibleCounts.Dialogue}`} />
                   </>
                 )}
                 {data.communities.length > 0 && view === 'entity' && (
