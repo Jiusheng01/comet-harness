@@ -41,4 +41,10 @@ export const personaApi = {
   activate(id: string) {
     return client.post<unknown, Wrapped<Persona>>(`/personas/${id}/activate`)
   },
+  optimizePrompt(systemPrompt: string) {
+    return client.post<unknown, Wrapped<{ optimized: string }>>(
+      '/personas/optimize-prompt',
+      { system_prompt: systemPrompt },
+    )
+  },
 }
