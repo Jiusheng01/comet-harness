@@ -22,50 +22,54 @@ async def lifespan(_: FastAPI):
     try:
         await upgrade_to_head()
     except Exception as e:
-        logger.error("数据库自动迁移失败: %s", e)
+        logger.error("数据库自动迁移失败，请检查迁移脚本或手动执行 alembic upgrade head: %s", e)
 
     from app.core.rag.es_index import ensure_index
 
     try:
         await ensure_index()
     except Exception as e:
-        logger.warning("ES 索引初始化失败: %s", e)
+        logger.warning("ES 索引初始化失败（稍后可重试）: %s", e)
 
     from app.core.memory.graph_schema import ensure_graph_schema
 
     try:
         await ensure_graph_schema()
     except Exception as e:
-        logger.warning("记忆图谱 schema 初始化失败: %s", e)
+        logger.warning("记忆图谱 schema 初始化失败（稍后可重试）: %s", e)
 
     from app.core.agent.tracing.span_recorder import get_recorder
+
     try:
         await get_recorder().start()
     except Exception as e:
-        logger.warning("Tracing 启动失败: %s", e)
+        logger.warning("Tracing 落库器启动失败（稍后可重试）: %s", e)
 
     from app.core.harness.recovery import get_recovery_worker
+
     try:
         await get_recovery_worker().start()
     except Exception as e:
-        logger.warning("Harness recovery 启动失败: %s", e)
+        logger.warning("Harness checkpoint 恢复器启动失败（稍后可手动恢复）: %s", e)
 
     logger.info("%s 启动完成", settings.app_name)
     yield
 
     try:
         await get_recovery_worker().stop()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Harness checkpoint 恢复器关闭异常: %s", e)
+
     try:
         await get_recorder().stop()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Tracing 落库器关闭异常: %s", e)
 
     await postgres.close()
     await elastic.close()
     await neo4j.close()
     await redis.close()
+    logger.info("%s 已关闭，连接池释放完成", settings.app_name)
 
 
 def create_app() -> FastAPI:
