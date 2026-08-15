@@ -36,26 +36,63 @@ _RETRY_STATUS = {429, 500, 502, 503, 504}
 _EMBED_BATCH_SIZE = max(1, int(os.getenv("EMBED_BATCH_SIZE", "10")))
 _EMBED_CONCURRENCY = max(1, int(os.getenv("EMBED_CONCURRENCY", "8")))
 
-# 进程级共享 HTTP 客户端：复用连接池，避免每次请求重建 TCP/TLS。
-# 评测上万次嵌入调用时，握手开销累积可观，复用后显著提速。
+# 进程级共享 HTTP 客户端：同一 event loop 内复用连接池，避免反复 TCP/TLS 握手。
+# Celery 的同步 task 入口会用 asyncio.run() 为每个任务创建/关闭独立 loop，
+# 因此不能把上一个任务的 AsyncClient/keep-alive 连接带到下一个 loop 使用。
 _shared_client: httpx.AsyncClient | None = None
+_shared_client_loop: asyncio.AbstractEventLoop | None = None
 
 
-def _get_shared_client() -> httpx.AsyncClient:
-    global _shared_client
-    if _shared_client is None or _shared_client.is_closed:
-        _shared_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
-        )
+async def _get_shared_client() -> httpx.AsyncClient:
+    """返回绑定当前 event loop 的共享 HTTP client。
+
+    FastAPI/评测通常长期运行在同一 loop，可持续复用连接池；Celery `asyncio.run()`
+    下一任务进入新 loop 时会自动替换旧 client，避免 `Event loop is closed`。
+    """
+    global _shared_client, _shared_client_loop
+
+    loop = asyncio.get_running_loop()
+    if (
+        _shared_client is not None
+        and not _shared_client.is_closed
+        and _shared_client_loop is loop
+    ):
+        return _shared_client
+
+    stale_client = _shared_client
+    _shared_client = None
+    _shared_client_loop = None
+
+    if stale_client is not None and not stale_client.is_closed:
+        try:
+            await stale_client.aclose()
+        except RuntimeError as e:
+            # Celery 上一个 asyncio.run() 的 loop 已关闭时，旧 transport 可能无法
+            # 再在当前 loop 中优雅 close；关键是绝不能继续复用它。
+            logger.debug("丢弃旧 event loop 的 LLM HTTP client: %r", e)
+
+    _shared_client = httpx.AsyncClient(
+        limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+    )
+    _shared_client_loop = loop
     return _shared_client
 
 
 async def close_llm_client() -> None:
-    """关闭共享 HTTP 客户端（应用/评测退出时调用）。"""
-    global _shared_client
-    if _shared_client is not None and not _shared_client.is_closed:
-        await _shared_client.aclose()
+    """关闭当前 event loop 的共享 HTTP 客户端（应用/评测退出时调用）。"""
+    global _shared_client, _shared_client_loop
+
+    client = _shared_client
     _shared_client = None
+    _shared_client_loop = None
+
+    if client is not None and not client.is_closed:
+        try:
+            await client.aclose()
+        except RuntimeError as e:
+            # 调用方可能正处于与 client 不同的 loop；此时清掉全局引用即可，
+            # 避免下一个任务复用旧 transport。
+            logger.debug("关闭旧 event loop 的 LLM HTTP client 时忽略异常: %r", e)
 
 
 async def _post_with_retry(
@@ -67,7 +104,7 @@ async def _post_with_retry(
     其余 4xx（如鉴权/参数错误）不重试，直接抛出。
     """
     last_exc: Exception | None = None
-    client = _get_shared_client()
+    client = await _get_shared_client()
     for attempt in range(_MAX_RETRIES):
         try:
             resp = await client.post(url, headers=headers, json=json, timeout=timeout)
