@@ -9,14 +9,11 @@ import {
   LikeFilled,
   LikeOutlined,
   ReloadOutlined,
-  StarFilled,
-  StarOutlined,
 } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
 import MarkdownMessage from '@/components/MarkdownMessage'
 import ChatProcess from './ChatProcess'
 import HumanBubbles from './HumanBubbles'
-import { favoriteApi } from '@/api/favorites'
 import { chatApi } from '@/api/chat'
 import { copyText } from '@/utils/clipboard'
 import { AuthenticatedImage } from '@/components/AuthenticatedImage'
@@ -33,9 +30,6 @@ export default function MessageItem({
   avatars?: ChatAvatars
 }) {
   const isUser = msg.role === 'user'
-  // 本地收藏态：null 未收藏；string 已收藏（存 favorite id 供取消）
-  const [favId, setFavId] = useState<string | null>(msg.favId ?? null)
-  const [favLoading, setFavLoading] = useState(false)
   // 本地反馈态：up | down | null
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(msg.feedback ?? null)
 
@@ -59,30 +53,6 @@ export default function MessageItem({
       }
     } catch (e) {
       antdMessage.error((e as Error).message)
-    }
-  }
-
-  const onFavorite = async () => {
-    if (favLoading) return
-    setFavLoading(true)
-    try {
-      if (favId) {
-        await favoriteApi.remove(favId)
-        setFavId(null)
-        antdMessage.success('已取消收藏')
-      } else {
-        const { data } = await favoriteApi.add('message', msg.id, {
-          title: '对话回答',
-          summary: msg.content.slice(0, 120),
-          conversation_id: msg.conversationId,
-        })
-        setFavId(data.id)
-        antdMessage.success('已收藏')
-      }
-    } catch (e) {
-      antdMessage.error((e as Error).message)
-    } finally {
-      setFavLoading(false)
     }
   }
 
@@ -289,7 +259,7 @@ export default function MessageItem({
           </div>
         )}
 
-        {/* 引用来源 + 复制按钮（AI 消息）；真人模式下隐藏整排 */}
+        {/* 引用来源 + 操作按钮（AI 消息）；真人模式下隐藏整排 */}
         {!isUser && !humanModeActive && (
           <div style={{ marginTop: 6 }}>
             {msg.citations && msg.citations.length > 0 && (
@@ -312,16 +282,6 @@ export default function MessageItem({
                   style={{ color: '#667085', fontSize: 12 }}
                 >
                   复制
-                </Button>
-                <Button
-                  size="small"
-                  type="text"
-                  icon={favId ? <StarFilled style={{ color: '#FAAD14' }} /> : <StarOutlined />}
-                  onClick={onFavorite}
-                  loading={favLoading}
-                  style={{ color: favId ? '#FAAD14' : '#667085', fontSize: 12 }}
-                >
-                  {favId ? '已收藏' : '收藏'}
                 </Button>
                 <Tooltip title="赞">
                   <Button
