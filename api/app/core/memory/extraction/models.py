@@ -38,7 +38,7 @@ class ExtractedStatement(BaseModel):
     # 记忆动力学：LLM 评分（0~1），缺省给中性默认
     importance: float = 0.5  # 重要度
     confidence: float = 0.8  # 置信度
-    # 情绪（含情绪时填，与 PG 情绪表并存：图谱情绪用于带情绪的记忆检索/画像）
+    # 记忆图谱中的情绪语义元数据，仅用于陈述检索/画像
     has_emotional_state: bool = False
     emotion_type: str | None = None
     emotion_intensity: float | None = None
