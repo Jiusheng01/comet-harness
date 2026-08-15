@@ -75,36 +75,12 @@ class DailyReviewService:
             "documents": documents,
         }
 
-    async def _collect_mood(self, user_id: uuid.UUID) -> str:
-        """取今天的情绪画像，转成给 LLM 的一句话描述；无数据返回空串。"""
-        try:
-            from app.services.emotion_service import EmotionService
-
-            data = await EmotionService(self.session).trend(user_id, 1)
-            points = data.get("points", [])
-            if not points:
-                return ""
-            today = points[-1]
-            if (today.get("count") or 0) <= 0:
-                return ""
-            v = today.get("avg_valence", 0.0)
-            if v >= 0.3:
-                tone = "整体偏积极愉悦"
-            elif v <= -0.3:
-                tone = "情绪略低落"
-            else:
-                tone = "情绪比较平稳"
-            return f"{tone}（效价 {v:.2f}，共 {today.get('count')} 条情绪记录）"
-        except Exception as e:
-            logger.warning("收集每日心情失败（忽略）: %s", e)
-            return ""
-
     async def _generate_content_and_care(
         self, user_id: uuid.UUID, data: dict
     ) -> tuple[str, str]:
         """生成回顾正文 + 关怀句。
 
-        先用 session 串行取好 client / 情绪 / 洞察（session 非并发安全），
+        先用 session 串行取好 client / 洞察（session 非并发安全），
         再把两次纯 httpx 的 LLM 调用并行（gather），避免串行叠加导致仪表盘加载慢。
         """
         from app.core.llm.resolver import get_optional_client_for_type
@@ -130,18 +106,17 @@ class DailyReviewService:
         client = await get_optional_client_for_type(self.session, user_id, "chat")
         if not client:
             return content_fallback, ""
-        mood = await self._collect_mood(user_id)
         insights = await self._collect_insights(user_id)
 
         # 两次 LLM 调用并行（纯 httpx，无 session 依赖）
         content, care = await asyncio.gather(
-            self._call_content(client, data, mood, content_fallback),
-            self._call_care(client, data, mood, insights),
+            self._call_content(client, data, content_fallback),
+            self._call_care(client, data, insights),
         )
         return content, care
 
     async def _call_content(
-        self, client, data: dict, mood: str, fallback: str
+        self, client, data: dict, fallback: str
     ) -> str:
         """调用 LLM 生成回顾正文（带一次重试）。"""
         prompt = render_prompt(
@@ -149,7 +124,6 @@ class DailyReviewService:
             messages="；".join(data["messages"][:20]) or "（无）",
             memories="；".join(data["memories"][:30]) or "（无）",
             documents="、".join(data["documents"]) or "（无）",
-            mood=mood or "（暂无情绪数据）",
         )
         for attempt in range(2):
             try:
@@ -167,7 +141,7 @@ class DailyReviewService:
         return fallback
 
     async def _call_care(
-        self, client, data: dict, mood: str, insights: str
+        self, client, data: dict, insights: str
     ) -> str:
         """调用 LLM 生成关怀句。失败返回空串。"""
         try:
@@ -175,7 +149,6 @@ class DailyReviewService:
             memories = "；".join((data.get("memories") or [])[:10]) or "（无）"
             prompt = render_prompt(
                 "daily_care.jinja2",
-                mood=mood or "（暂无情绪数据）",
                 insights=insights or "（暂无）",
                 memories=memories,
                 recent=recent,
