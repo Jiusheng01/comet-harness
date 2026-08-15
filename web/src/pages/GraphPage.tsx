@@ -44,6 +44,18 @@ interface FGLink {
   predicate_surface?: string
 }
 
+interface RelationDetail {
+  label: string
+  source: GraphNode
+  target: GraphNode
+}
+
+interface ProvenanceDetail {
+  label: string
+  source: GraphNode
+  target: GraphNode
+}
+
 function kindOf(node: GraphNode): Kind {
   const kind = node.kind as Kind | undefined
   return kind && kind in KIND_META ? kind : 'Entity'
@@ -70,13 +82,13 @@ function viewAllowsNode(view: GraphView, node: GraphNode) {
   const kind = kindOf(node)
   if (view === 'entity') return kind === 'Entity'
   if (view === 'event') return kind === 'Entity' || kind === 'Event'
-  return true
+  return kind === 'Dialogue' || kind === 'Chunk' || kind === 'Statement' || kind === 'Entity'
 }
 
 function viewAllowsEdge(view: GraphView, edge: GraphEdge) {
   if (view === 'entity') return edge.rel === 'RELATION'
-  if (view === 'event') return edge.rel === 'RELATION' || edge.rel === 'INVOLVES'
-  return true
+  if (view === 'event') return edge.rel === 'INVOLVES'
+  return edge.rel === 'HAS_CHUNK' || edge.rel === 'HAS_STATEMENT' || edge.rel === 'MENTIONS'
 }
 
 export default function GraphPage() {
@@ -130,20 +142,29 @@ export default function GraphPage() {
   }, [data])
 
   const viewStore = useMemo(() => {
-    const eligible = new Set<string>()
-    const adj = new Map<string, Set<string>>()
-    const degree = new Map<string, number>()
-    const edges: GraphEdge[] = []
-
+    const candidates = new Set<string>()
     data?.nodes.forEach((node) => {
-      if (!viewAllowsNode(view, node)) return
-      eligible.add(node.id)
-      adj.set(node.id, new Set())
-      degree.set(node.id, 0)
+      if (viewAllowsNode(view, node)) candidates.add(node.id)
     })
 
-    data?.edges.forEach((edge) => {
-      if (!viewAllowsEdge(view, edge)) return
+    const allowedEdges = (data?.edges ?? []).filter(
+      (edge) => viewAllowsEdge(view, edge) && candidates.has(edge.source) && candidates.has(edge.target),
+    )
+
+    // 事件视图只保留真正参与事件的 Entity/Event，避免没有事件时仍显示孤立实体。
+    const eligible = view === 'event'
+      ? new Set(allowedEdges.flatMap((edge) => [edge.source, edge.target]))
+      : candidates
+
+    const adj = new Map<string, Set<string>>()
+    const degree = new Map<string, number>()
+    eligible.forEach((id) => {
+      adj.set(id, new Set())
+      degree.set(id, 0)
+    })
+
+    const edges: GraphEdge[] = []
+    allowedEdges.forEach((edge) => {
       if (!eligible.has(edge.source) || !eligible.has(edge.target)) return
       edges.push(edge)
       adj.get(edge.source)?.add(edge.target)
@@ -176,12 +197,26 @@ export default function GraphPage() {
       setSelected(null)
       return
     }
+
     const ids = new Set<string>([seed.id])
-    viewStore.adj.get(seed.id)?.forEach((id) => ids.add(id))
+    let frontier = [seed.id]
+    const hops = view === 'provenance' ? 3 : 1
+    for (let hop = 0; hop < hops; hop += 1) {
+      const next: string[] = []
+      frontier.forEach((id) => {
+        viewStore.adj.get(id)?.forEach((neighbor) => {
+          if (ids.has(neighbor)) return
+          ids.add(neighbor)
+          next.push(neighbor)
+        })
+      })
+      frontier = next
+    }
+
     setShownIds(ids)
     setSelected(seed)
     setTimeout(() => fgRef.current?.zoomToFit(500, 70), 350)
-  }, [chooseSeed, viewStore])
+  }, [chooseSeed, view, viewStore])
 
   useEffect(() => {
     resetFocus()
@@ -325,38 +360,49 @@ export default function GraphPage() {
   }, [data])
 
   const detail = useMemo(() => {
-    if (!data || !selected) return { relations: [], statements: [], events: [] }
-    const relations: { label: string; target: GraphNode }[] = []
+    if (!data || !selected) {
+      return { relations: [], statements: [], events: [], participants: [], provenance: [] }
+    }
+
+    const relations: RelationDetail[] = []
     const statements: GraphNode[] = []
     const events: GraphNode[] = []
+    const participants: GraphNode[] = []
+    const provenance: ProvenanceDetail[] = []
 
     data.edges.forEach((edge) => {
       if (edge.source !== selected.id && edge.target !== selected.id) return
-      const otherId = edge.source === selected.id ? edge.target : edge.source
-      const other = store.nodeMap.get(otherId)
-      if (!other) return
+      const source = store.nodeMap.get(edge.source)
+      const target = store.nodeMap.get(edge.target)
+      if (!source || !target) return
+      const other = edge.source === selected.id ? target : source
 
       if (edge.rel === 'RELATION') {
         relations.push({
           label: edge.predicate_surface || edge.predicate || '关联',
-          target: other,
+          source,
+          target,
         })
-      } else if (edge.rel === 'MENTIONS' && kindOf(other) === 'Statement') {
-        statements.push(other)
-      } else if (edge.rel === 'INVOLVES' && kindOf(other) === 'Event') {
-        events.push(other)
+      } else if (edge.rel === 'MENTIONS') {
+        if (kindOf(other) === 'Statement') statements.push(other)
+        provenance.push({ label: REL_LABEL.MENTIONS, source, target })
+      } else if (edge.rel === 'INVOLVES') {
+        if (kindOf(other) === 'Event') events.push(other)
+        if (kindOf(other) === 'Entity') participants.push(other)
+      } else if (edge.rel === 'HAS_CHUNK' || edge.rel === 'HAS_STATEMENT') {
+        provenance.push({ label: REL_LABEL[edge.rel], source, target })
       }
     })
 
-    return { relations, statements, events }
+    return { relations, statements, events, participants, provenance }
   }, [data, selected, store])
 
   const viewHelp =
     view === 'entity'
-      ? '只展示 Entity 与语义关系，适合查看系统真正记住的知识。'
+      ? '系统记住了什么：只展示实体与语义关系。'
       : view === 'event'
-        ? '展示 Entity + Event，查看经历与参与实体。'
-        : '展示 Dialogue → Chunk → Statement → Entity 的来源链路，用于解释和调试。'
+        ? '发生过什么：只展示事件与参与实体，不混入普通语义关系。'
+        : '为什么记住：只展示 Dialogue → Chunk → Statement → Entity 的来源链路。'
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -406,7 +452,9 @@ export default function GraphPage() {
           ) : !data || data.nodes.length === 0 ? (
             <div style={center}><Empty description="还没有记忆图谱数据" /></div>
           ) : graphData.nodes.length === 0 ? (
-            <div style={center}><Empty description="当前视图暂时没有可展示的节点" /></div>
+            <div style={center}>
+              <Empty description={view === 'event' ? '当前还没有事件记忆' : '当前视图暂时没有可展示的节点'} />
+            </div>
           ) : (
             <>
               <ForceGraph2D
@@ -479,7 +527,7 @@ export default function GraphPage() {
               <div style={legendPanel}>
                 <Text strong style={{ fontSize: 12 }}>节点类型</Text>
                 <LegendRow color={KIND_META.Entity.color} label={`实体 ${counts.Entity}`} />
-                {(view === 'event' || view === 'provenance') && <LegendRow color={KIND_META.Event.color} label={`事件 ${counts.Event}`} />}
+                {view === 'event' && <LegendRow color={KIND_META.Event.color} label={`事件 ${counts.Event}`} />}
                 {view === 'provenance' && (
                   <>
                     <LegendRow color={KIND_META.Statement.color} label={`陈述 ${counts.Statement}`} />
@@ -487,7 +535,7 @@ export default function GraphPage() {
                     <LegendRow color={KIND_META.Dialogue.color} label={`对话 ${counts.Dialogue}`} />
                   </>
                 )}
-                {data.communities.length > 0 && (
+                {data.communities.length > 0 && view === 'entity' && (
                   <div style={{ marginTop: 9, paddingTop: 8, borderTop: '1px solid #f0f1f3' }}>
                     <Text type="secondary" style={{ fontSize: 11 }}>社区 {data.communities.length} 个</Text>
                   </div>
@@ -497,7 +545,12 @@ export default function GraphPage() {
           )}
         </div>
 
-        <NodeDetail node={selected} detail={detail} onOpenProvenance={() => setView('provenance')} />
+        <NodeDetail
+          view={view}
+          node={selected}
+          detail={detail}
+          onOpenProvenance={() => setView('provenance')}
+        />
       </Card>
     </div>
   )
@@ -513,27 +566,98 @@ function LegendRow({ color, label }: { color: string; label: string }) {
 }
 
 function NodeDetail({
+  view,
   node,
   detail,
   onOpenProvenance,
 }: {
+  view: GraphView
   node: GraphNode | null
   detail: {
-    relations: { label: string; target: GraphNode }[]
+    relations: RelationDetail[]
     statements: GraphNode[]
     events: GraphNode[]
+    participants: GraphNode[]
+    provenance: ProvenanceDetail[]
   }
   onOpenProvenance: () => void
 }) {
   if (!node) {
+    const hint = view === 'entity'
+      ? '点击实体查看语义关系和来源陈述。'
+      : view === 'event'
+        ? '点击事件或实体查看参与关系。'
+        : '点击来源链路中的节点查看上下游来源。'
     return (
       <div style={{ padding: '14px 18px', borderTop: '1px solid #eef0f4', background: '#fff' }}>
-        <Text type="secondary">点击图中的节点，在这里查看节点详情、语义关系和来源。</Text>
+        <Text type="secondary">{hint}</Text>
       </div>
     )
   }
 
   const kind = kindOf(node)
+
+  const context = view === 'entity' ? (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+      <DetailColumn title={`相关关系 (${detail.relations.length})`}>
+        {detail.relations.length === 0 ? (
+          <Text type="secondary" style={{ fontSize: 12 }}>暂无语义关系</Text>
+        ) : detail.relations.slice(0, 8).map((item, index) => (
+          <div key={`${item.source.id}-${item.target.id}-${index}`} style={detailRow}>
+            <Text>{item.source.name}</Text> <Text type="secondary">— {item.label} →</Text> <Text>{item.target.name}</Text>
+          </div>
+        ))}
+      </DetailColumn>
+
+      <DetailColumn title={`来源陈述 (${detail.statements.length})`}>
+        {detail.statements.length === 0 ? (
+          <Text type="secondary" style={{ fontSize: 12 }}>暂无直接来源陈述</Text>
+        ) : (
+          <>
+            {detail.statements.slice(0, 4).map((statement) => (
+              <div key={statement.id} style={detailRow}>{statement.name || statement.description}</div>
+            ))}
+            <Button type="link" size="small" style={{ paddingLeft: 0 }} onClick={onOpenProvenance}>
+              查看完整溯源 →
+            </Button>
+          </>
+        )}
+      </DetailColumn>
+    </div>
+  ) : view === 'event' ? (
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 10 }}>
+      {kind === 'Event' ? (
+        <DetailColumn title={`参与实体 (${detail.participants.length})`}>
+          {detail.participants.length === 0 ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>暂无参与实体</Text>
+          ) : detail.participants.slice(0, 8).map((participant) => (
+            <div key={participant.id} style={detailRow}>{participant.name}</div>
+          ))}
+        </DetailColumn>
+      ) : (
+        <DetailColumn title={`相关事件 (${detail.events.length})`}>
+          {detail.events.length === 0 ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>暂无关联事件</Text>
+          ) : detail.events.slice(0, 8).map((event) => (
+            <div key={event.id} style={detailRow}>{event.name}</div>
+          ))}
+        </DetailColumn>
+      )}
+    </div>
+  ) : (
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 10 }}>
+      <DetailColumn title={`来源链路 (${detail.provenance.length})`}>
+        {detail.provenance.length === 0 ? (
+          <Text type="secondary" style={{ fontSize: 12 }}>当前节点没有更多来源链路</Text>
+        ) : detail.provenance.slice(0, 10).map((item, index) => (
+          <div key={`${item.source.id}-${item.target.id}-${index}`} style={detailRow}>
+            <Text>{item.source.name}</Text> <Text type="secondary">— {item.label} →</Text> <Text>{item.target.name}</Text>
+          </div>
+        ))}
+      </DetailColumn>
+    </div>
+  )
+
   return (
     <div
       style={{
@@ -562,11 +686,11 @@ function NodeDetail({
         )}
         <Space size={5} wrap>
           {typeof node.importance === 'number' && <Tag>重要度 {node.importance.toFixed(2)}</Tag>}
-          {node.community_id && <Tag color="purple">社区 {node.community_id.slice(0, 8)}</Tag>}
+          {node.community_id && view === 'entity' && <Tag color="purple">社区 {node.community_id.slice(0, 8)}</Tag>}
           {kind === 'Entity' && <Tag>被提及 {node.mention_count ?? 0}</Tag>}
           {kind === 'Entity' && <Tag>被召回 {node.access_count ?? 0}</Tag>}
         </Space>
-        {node.core_facts && node.core_facts.length > 0 && (
+        {node.core_facts && node.core_facts.length > 0 && view === 'entity' && (
           <div style={{ marginTop: 9 }}>
             {node.core_facts.slice(0, 4).map((fact) => (
               <div key={fact} style={{ color: '#155EEF', fontSize: 12.5, lineHeight: 1.75 }}>✦ {fact}</div>
@@ -575,40 +699,7 @@ function NodeDetail({
         )}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 }}>
-        <DetailColumn title={`相关关系 (${detail.relations.length})`}>
-          {detail.relations.length === 0 ? (
-            <Text type="secondary" style={{ fontSize: 12 }}>暂无语义关系</Text>
-          ) : detail.relations.slice(0, 8).map((item, index) => (
-            <div key={`${item.target.id}-${index}`} style={detailRow}>
-              <Text>{node.name}</Text> <Text type="secondary">— {item.label} →</Text> <Text>{item.target.name}</Text>
-            </div>
-          ))}
-        </DetailColumn>
-
-        <DetailColumn title={`相关事件 (${detail.events.length})`}>
-          {detail.events.length === 0 ? (
-            <Text type="secondary" style={{ fontSize: 12 }}>暂无关联事件</Text>
-          ) : detail.events.slice(0, 6).map((event) => (
-            <div key={event.id} style={detailRow}>{event.name}</div>
-          ))}
-        </DetailColumn>
-
-        <DetailColumn title={`来源陈述 (${detail.statements.length})`}>
-          {detail.statements.length === 0 ? (
-            <Text type="secondary" style={{ fontSize: 12 }}>暂无直接来源陈述</Text>
-          ) : (
-            <>
-              {detail.statements.slice(0, 4).map((statement) => (
-                <div key={statement.id} style={detailRow}>{statement.name || statement.description}</div>
-              ))}
-              <Button type="link" size="small" style={{ paddingLeft: 0 }} onClick={onOpenProvenance}>
-                查看完整溯源 →
-              </Button>
-            </>
-          )}
-        </DetailColumn>
-      </div>
+      {context}
     </div>
   )
 }
