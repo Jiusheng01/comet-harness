@@ -37,7 +37,6 @@ import {
   type ToolCall,
   type ToolRunStatus,
 } from '@/api/chat'
-import { favoriteApi } from '@/api/favorites'
 import { toolsApi } from '@/api/tools'
 
 /** 过滤 noop/无效 trace（全 0 UUID 来自 tracing 关闭或采样跳过） */
@@ -278,7 +277,7 @@ export default function ChatPage() {
       })
   }, [])
 
-  // 收藏深链：?conversation=&message= 打开会话并定位消息
+  // 会话深链：?conversation=&message= 打开会话并定位消息
   useEffect(() => {
     const conv = params.get('conversation')
     const msg = params.get('message')
@@ -316,15 +315,8 @@ export default function ChatPage() {
     resumeAbortRef.current?.abort()
     resumeAbortRef.current = null
     try {
-      const [{ data }, favResp] = await Promise.all([
-        chatApi.listMessages(id),
-        favoriteApi.list('message'),
-      ])
-      const favByMsg: Record<string, string> = {}
-      favResp.data.forEach((f) => {
-        favByMsg[f.target_id] = f.id
-      })
-          setMessages(
+      const { data } = await chatApi.listMessages(id)
+      setMessages(
         data.map((m: ChatMessage) => ({
           id: m.id,
           role: m.role as 'user' | 'assistant',
@@ -337,7 +329,6 @@ export default function ChatPage() {
             file_name: a.file_name,
           })),
           conversationId: id,
-          favId: favByMsg[m.id] ?? null,
           feedback: m.feedback ?? null,
           createdAt: m.created_at,
           fromHistory: true,
@@ -697,7 +688,6 @@ export default function ChatPage() {
       streaming: true,
     }
     setMessages((prev) => [...prev, userMsg, aiMsg])
-
     let convId = activeId
     // 新发送前断开可能存在的续传订阅，避免与本次发送流重复渲染
     resumeAbortRef.current?.abort()
