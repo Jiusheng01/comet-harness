@@ -1,8 +1,4 @@
-"""聚合所有路由，统一挂在 /api 前缀下。
-
-后续各阶段在此注册：auth / model_config / document / image / tag /
-conversation / chat / memory / search / favorite / dashboard / task。
-"""
+"""聚合所有路由，统一挂在 /api 前缀下。"""
 from fastapi import APIRouter
 
 from app.controllers import (
@@ -14,7 +10,6 @@ from app.controllers import (
     conversation_share_controller,
     dashboard_controller,
     document_controller,
-    favorite_controller,
     file_controller,
     health_controller,
     image_controller,
@@ -47,7 +42,6 @@ api_router.include_router(agent_persona_controller.router)
 api_router.include_router(mcp_controller.router)
 api_router.include_router(tool_controller.router)
 api_router.include_router(search_controller.router)
-api_router.include_router(favorite_controller.router)
 api_router.include_router(dashboard_controller.router)
 api_router.include_router(research_controller.router)
 api_router.include_router(agent_task_controller.router)
