@@ -41,13 +41,11 @@ api/
 │   │   ├── knowledge_base_controller.py # 多知识库管理 + 检索开关（v0.0.3）
 │   │   ├── tool_controller.py          # 内置工具配置（注册中心 + 开关）
 │   │   ├── mcp_controller.py           # MCP Server 配置 + 工具发现/测试
-│   │   ├── emotion_controller.py       # 当前情绪画像 / 趋势 / 记录 / 分布
 │   │   ├── research_controller.py      # 深度研究 SSE 流式 + 列表/详情/删除/save-to-kb + 报告分享/导出(v0.0.4)
 │   │   ├── agent_task_controller.py    # 定时任务 CRUD + 运行历史 + 立即运行 + 未读红点(v0.0.4)
 │   │   ├── notify_controller.py        # 消息推送渠道 CRUD + 测试推送(v0.0.4)
 │   │   ├── trace_controller.py         # 执行轨迹列表/详情/成本聚合(v0.0.5)
 │   │   ├── search_controller.py        # 全局搜索
-│   │   ├── favorite_controller.py      # 收藏夹
 │   │   ├── dashboard_controller.py     # 统计概览 + 记忆趋势 + 每日回顾 + Loop 健康度 + 成本卡
 │   │   ├── file_controller.py          # 文件访问 /files/{key}
 │   │   └── health_controller.py        # /hello + /health（四存储连通性）
@@ -57,7 +55,7 @@ api/
 │   ├── schemas/             # Pydantic 请求/响应模型
 │   ├── models/              # SQLAlchemy ORM 模型（users / model_configs / documents / images /
 │   │                        #   tags / memories / conversations / messages / agent_configs /
-│   │                        #   favorites / daily_reviews / message_feedbacks / tool_configs /
+│   │                        #   daily_reviews / message_feedbacks / tool_configs /
 │   │                        #   mcp_servers / emotion_records / emotion_profiles /
 │   │                        #   research_reports / agent_tasks / report_shares / notify_channels(v0.0.4)
 │   │                        #   loop_runs / loop_iterations / agent_traces / agent_spans /
