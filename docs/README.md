@@ -11,7 +11,6 @@
 - [04-记忆](04-记忆/) — 长期记忆、Neo4j、召回、反馈闭环
 - [05-Agent工作负载](05-Agent工作负载/) — Deep Research 与定时任务等复杂 Agent Workloads
 - [06-工程化与部署](06-工程化与部署/) — 安全、Celery、分享、推送、部署与 Observability
-- [07-情绪与个性化](07-情绪与个性化/) — Personal AI 产品能力
 - [08-评测体系](08-评测体系/) — 离线评测、公共 Benchmark 与回归验证
 - [release-notes](release-notes/) — 历史版本发布说明
 

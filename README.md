@@ -143,7 +143,7 @@ Harness 不是孤立运行时，仓库保留了一组完整业务能力作为真
 | **Scheduled Tasks** | Celery 驱动定时研究、回顾、聚类与通知 |
 | **Observability / Eval** | Trace、成本、Verifier、离线评测与恢复回归验证 |
 
-产品侧仍包含多知识库、角色 / Skills、全局搜索、收藏、知识图谱、真人对话模式、分享与导出等能力，但 README 不再按版本堆叠功能清单；详细设计统一放在 [`docs/`](docs/) 与 [`docs/release-notes/`](docs/release-notes/) 中。
+产品侧仍包含多知识库、角色 / Skills、全局搜索、知识图谱、真人对话模式、分享与导出等能力，但 README 不再按版本堆叠功能清单；详细设计统一放在 [`docs/`](docs/) 与 [`docs/release-notes/`](docs/release-notes/) 中。
 
 ---
 
@@ -214,7 +214,9 @@ git clone https://github.com/Jiusheng01/comet-harness.git; cd comet-harness
 ### 2. Start storage services
 
 ```powershell
-Copy-Item .env.example .env; docker compose build elasticsearch; docker compose up -d postgres elasticsearch neo4j redis
+Copy-Item .env.example .env
+docker compose build elasticsearch
+docker compose up -d postgres elasticsearch neo4j redis
 ```
 
 检查状态：
@@ -272,7 +274,8 @@ Invoke-RestMethod http://localhost:8000/api/health
 新开 PowerShell，在仓库根目录执行：
 
 ```powershell
-cd api; uv run celery -A app.celery_app.celery_app worker -l info -Q default,parse,memory,beat,research --pool=solo
+cd api
+uv run celery -A app.celery_app.celery_app worker -l info -Q default,parse,memory,beat,research --pool=solo
 ```
 
 需要定时任务时，再开一个终端：
@@ -353,7 +356,6 @@ comet-harness/
 │   ├── 04-记忆/
 │   ├── 05-Agent工作负载/
 │   ├── 06-工程化与部署/
-│   ├── 07-情绪与个性化/
 │   ├── 08-评测体系/
 │   └── release-notes/
 ├── docker/es/                  # Elasticsearch + IK image
